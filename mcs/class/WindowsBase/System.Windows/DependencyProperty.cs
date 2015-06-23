@@ -27,37 +27,56 @@
 //
 
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 
 namespace System.Windows {
 	public sealed class DependencyProperty {
-		private Dictionary<Type,PropertyMetadata> metadataByType = new Dictionary<Type,PropertyMetadata>();
+        private readonly Dictionary<Type, PropertyMetadata> metadataByType = new Dictionary<Type, PropertyMetadata>();
 
 		public static readonly object UnsetValue = new object ();
+        private readonly string name;
+        private readonly Type ownerType;
+        private readonly Type propertyType;
+        private readonly Lazy<int> hashCode;
 
 		private DependencyProperty (bool isAttached, string name, Type propertyType, Type ownerType,
 					    PropertyMetadata defaultMetadata,
 					    ValidateValueCallback validateValueCallback)
 		{
+            hashCode = new Lazy<int>(this.CalculateHashCode);
 			IsAttached = isAttached;
 			DefaultMetadata = (defaultMetadata == null ? new PropertyMetadata() : defaultMetadata);
-			Name = name;
-			OwnerType = ownerType;
-			PropertyType = propertyType;
+            this.name = name;
+            this.ownerType = ownerType;
+            this.propertyType = propertyType;
 			ValidateValueCallback = validateValueCallback;
 		}
 
-		internal bool IsAttached { get; set; }
+        public bool IsAttached { get; set; }
 		public bool ReadOnly { get; private set; }
 		public PropertyMetadata DefaultMetadata { get; private set; }
-		public string Name { get; private set; }
-		public Type OwnerType { get; private set; }
-		public Type PropertyType { get; private set; }
+
+        public string Name
+        {
+            get { return this.name; }
+        }
+
+        public Type OwnerType
+        {
+            get { return this.ownerType; }
+        }
+
+        public Type PropertyType
+        {
+            get { return this.propertyType; }
+        }
+
 		public ValidateValueCallback ValidateValueCallback { get; private set; }
 
 		public int GlobalIndex {			
 			get { throw new NotImplementedException (); }
 		}
-
 
 		public DependencyProperty AddOwner(Type ownerType)
 		{
@@ -72,19 +91,23 @@ namespace System.Windows {
 			// MS seems to always return the same DependencyProperty
 			return this;
 		}
-		
+
 		public PropertyMetadata GetMetadata(Type forType)
 		{
-			if (metadataByType.ContainsKey (forType))
-				return metadataByType[forType];
-			return null;
+            PropertyMetadata metadata;
+            return this.metadataByType.TryGetValue(forType, out metadata) ? metadata : null;
 		}
 
 		public PropertyMetadata GetMetadata(DependencyObject dependencyObject)
 		{
-			if (metadataByType.ContainsKey (dependencyObject.GetType()))
-				return metadataByType[dependencyObject.GetType()];
-			return null;
+            var forType = dependencyObject.GetType();
+            PropertyMetadata metadata;
+            if (this.metadataByType.TryGetValue(forType, out metadata))
+            {
+                return metadata;
+            }
+
+            return forType.IsSubclassOf(this.ownerType) ? this.DefaultMetadata : null;
 		}
 
 		public PropertyMetadata GetMetadata(DependencyObjectType dependencyObjectType)
@@ -94,10 +117,26 @@ namespace System.Windows {
 			return null;
 		}
 
-
 		public bool IsValidType(object value)
 		{
-			return PropertyType.IsInstanceOfType (value);
+            var nullableUnderlyingType = Nullable.GetUnderlyingType(this.propertyType);
+            TypeConverter converter = null;
+            try
+            {
+#if WINDOWS_PHONE
+                converter = TypeDescriptor.GetConverter(this.propertyType);
+#else
+                // NullableConverter has no parameterless constructor, so trying to call GetConverter for nullable type raises MissingMethodExeption
+                converter = nullableUnderlyingType != null ? new NullableConverter(this.propertyType) : TypeDescriptor.GetConverter(this.propertyType);
+#endif
+            }
+            catch (Exception e)
+            {
+                Debug.WriteLine("Exception occured during geting converter for Type {1}: {0}", e, this.propertyType);
+            }
+
+            return ((!this.propertyType.IsValueType || nullableUnderlyingType != null) && value == null)
+                || this.propertyType.IsInstanceOfType(value) || (converter != null && converter.CanConvertFrom(value.GetType()));
 		}
 
 		public bool IsValidValue(object value)
@@ -108,7 +147,7 @@ namespace System.Windows {
 				return true;
 			return ValidateValueCallback (value);
 		}
-		
+
 		public void OverrideMetadata(Type forType, PropertyMetadata typeMetadata)
 		{
 			if (forType == null)
@@ -116,8 +155,10 @@ namespace System.Windows {
 			if (typeMetadata == null)
 				throw new ArgumentNullException ("typeMetadata");
 
-			if (ReadOnly)
-				throw new InvalidOperationException (String.Format ("Cannot override metadata on readonly property '{0}' without using a DependencyPropertyKey", Name));
+            if (ReadOnly)
+            {
+                throw new InvalidOperationException(String.Format("Cannot override metadata on readonly property '{0}' without using a DependencyPropertyKey", this.name));
+            }
 
 			typeMetadata.DoMerge (DefaultMetadata, this, forType);
 			metadataByType.Add (forType, typeMetadata);
@@ -140,12 +181,12 @@ namespace System.Windows {
 
 		public override string ToString ()
 		{
-			return Name;
+            return this.name;
 		}
 
 		public override int GetHashCode ()
 		{
-			return Name.GetHashCode() ^ PropertyType.GetHashCode() ^ OwnerType.GetHashCode();
+            return this.hashCode.Value;
 		}
 
 		public static DependencyProperty Register(string name, Type propertyType, Type ownerType)
@@ -168,7 +209,7 @@ namespace System.Windows {
 
 			DependencyProperty dp = new DependencyProperty(false, name, propertyType, ownerType,
 								       typeMetadata, validateValueCallback);
-			DependencyObject.register(ownerType, dp);
+            DependencyObject.Register(ownerType, dp);
 
 			dp.OverrideMetadata (ownerType, typeMetadata);
 
@@ -192,7 +233,7 @@ namespace System.Windows {
 		{
 			DependencyProperty dp = new DependencyProperty(true, name, propertyType, ownerType,
 								       defaultMetadata, validateValueCallback);
-			DependencyObject.register(ownerType, dp);
+            DependencyObject.Register(ownerType, dp);
 			return dp;
 		}
 
@@ -215,7 +256,6 @@ namespace System.Windows {
 			return RegisterReadOnly (name, propertyType, ownerType, typeMetadata, null);
 		}
 
-
 		public static DependencyPropertyKey RegisterReadOnly(string name, Type propertyType, Type ownerType,
 								     PropertyMetadata typeMetadata,
 								     ValidateValueCallback validateValueCallback)
@@ -225,5 +265,31 @@ namespace System.Windows {
 			return new DependencyPropertyKey (prop);
 		}
 
+        internal static DependencyProperty GetRegisteredDependencyProperty(DependencyObject target, string propertyName, string attachedDPOwnerNamespace = null, string attachedDPOwnerAssembly = null)
+        {
+            var targeType = target.GetType();
+            var dp = DependencyObject.GetDependencyProperty(targeType, propertyName);
+            while (dp == null && targeType != typeof(DependencyObject))
+            {
+                targeType = targeType.BaseType;
+                dp = DependencyObject.GetDependencyProperty(targeType, propertyName);
+            }
+            return dp;
+        }
+
+        internal object GetDefaultValue(DependencyObject forTypeOfObject)
+        {
+            var meta = this.GetMetadata(forTypeOfObject);
+            if (meta != null)
+            {
+                return meta.DefaultValue;
+            }
+            throw new InvalidOperationException();
+        }
+
+        private int CalculateHashCode()
+        {
+            return this.name.GetHashCode() ^ this.propertyType.GetHashCode() ^ this.ownerType.GetHashCode();
+        }
 	}
 }

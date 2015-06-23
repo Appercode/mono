@@ -29,9 +29,17 @@ using System.Xaml.Schema;
 
 namespace System.Windows.Markup
 {
-	[System.Runtime.CompilerServices.TypeForwardedFrom (Consts.AssemblyWindowsBase)]
+    /// <summary>Provides a base class for all XAML markup extensions.</summary>
 	public abstract class MarkupExtension
 	{
+        /// <summary>Initializes a new instance of a class derived from <see cref="T:System.Windows.Markup.MarkupExtension" />. </summary>
+        protected MarkupExtension()
+        {
+        }
+
+        /// <summary>When implemented in a derived class, returns an object that is set as the value of the target property for this markup extension. </summary>
+        /// <returns>The object value to set on the property where the extension is applied. </returns>
+        /// <param name="serviceProvider">Object that can provide services for the markup extension.</param>
 		public abstract object ProvideValue (IServiceProvider serviceProvider);
 	}
 }

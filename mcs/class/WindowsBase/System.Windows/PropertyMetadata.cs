@@ -32,7 +32,7 @@ namespace System.Windows {
 		private bool isSealed;
 		private PropertyChangedCallback propertyChangedCallback;
 		private CoerceValueCallback coerceValueCallback;
-		
+
 		protected bool IsSealed {
 			get { return isSealed; }
 		}
@@ -96,7 +96,7 @@ namespace System.Windows {
 			this.propertyChangedCallback = propertyChangedCallback;
 			this.coerceValueCallback = coerceValueCallback;
 		}
-		
+
 		protected virtual void Merge (PropertyMetadata baseMetadata, DependencyProperty dp)
 		{
 			if (defaultValue == null)
@@ -106,7 +106,7 @@ namespace System.Windows {
 			if (coerceValueCallback == null)
 				coerceValueCallback = baseMetadata.coerceValueCallback;
 		}
-		
+
 		protected virtual void OnApply (DependencyProperty dp, Type targetType)
 		{
 		}
@@ -117,5 +117,15 @@ namespace System.Windows {
 			OnApply (dp, targetType);
 			isSealed = true;
 		}
+
+        internal static void RemoveAllCachedDefaultValues(Freezable freezable)
+        {
+            throw new NotImplementedException();
+        }
+
+        internal virtual GetReadOnlyValueCallback GetReadOnlyValueCallback
+        {
+            get { return null; }
+        }
 	}
 }

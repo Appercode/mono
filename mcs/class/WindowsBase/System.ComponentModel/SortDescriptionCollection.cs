@@ -24,7 +24,6 @@
 //	Brian O'Keefe (zer0keefie@gmail.com)
 //
 
-using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 
@@ -49,8 +48,8 @@ namespace System.ComponentModel {
 			add { CollectionChanged += value; }
 			remove { CollectionChanged -= value; }
 		}
-			
-		protected event NotifyCollectionChangedEventHandler CollectionChanged;
+
+		protected internal event NotifyCollectionChangedEventHandler CollectionChanged;
 
 		protected override void ClearItems ()
 		{

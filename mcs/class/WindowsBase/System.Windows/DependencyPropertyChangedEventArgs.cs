@@ -66,18 +66,17 @@ namespace System.Windows {
 
 		public static bool operator != (DependencyPropertyChangedEventArgs left, DependencyPropertyChangedEventArgs right)
 		{
-			throw new NotImplementedException ();
+            return !left.Equals(right);
 		}
 
 		public static bool operator == (DependencyPropertyChangedEventArgs left, DependencyPropertyChangedEventArgs right)
 		{
-			throw new NotImplementedException ();
+            return left.Equals(right);
 		}
 
 		public override int GetHashCode()
 		{
-			throw new NotImplementedException ();
+            return base.GetHashCode();
 		}
-
 	}
 }
