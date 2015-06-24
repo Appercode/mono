@@ -21,11 +21,6 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Reflection;
-using System.Xaml;
-using System.Xaml.Schema;
 
 namespace System.Windows.Markup
 {

@@ -25,7 +25,6 @@
 
 using System;
 using System.ComponentModel;
-using System.Windows.Converters;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Globalization;
@@ -34,7 +33,6 @@ namespace System.Windows {
 
 	[Serializable]
 	[TypeConverter (typeof (PointConverter))]
-	[ValueSerializer (typeof (PointValueSerializer))]
 	public struct Point : IFormattable
 	{
 		public Point (double x, double y)

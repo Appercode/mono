@@ -25,13 +25,11 @@
 
 using System;
 using System.ComponentModel;
-using System.Windows.Converters;
 using System.Windows.Markup;
 
 namespace System.Windows {
 
 	[Serializable]
-	[ValueSerializer (typeof (SizeValueSerializer))]
 	[TypeConverter (typeof (SizeConverter))]
 	public struct Size : IFormattable
 	{

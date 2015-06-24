@@ -25,14 +25,12 @@
 
 using System;
 using System.ComponentModel;
-using System.Windows.Converters;
 using System.Windows.Markup;
 using System.Windows.Media;
 
 namespace System.Windows {
 
 	[Serializable]
-	[ValueSerializer (typeof (VectorValueSerializer))]
 	[TypeConverter (typeof (VectorConverter))]
 	public struct Vector : IFormattable
 	{

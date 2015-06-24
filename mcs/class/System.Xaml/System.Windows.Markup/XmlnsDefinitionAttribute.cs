@@ -21,21 +21,23 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Reflection;
-using System.Windows.Markup;
-using System.Xaml.Schema;
 
 namespace System.Windows.Markup
 {
 	[AttributeUsage (AttributeTargets.Assembly, AllowMultiple = true)]
-	[System.Runtime.CompilerServices.TypeForwardedFrom (Consts.AssemblyWindowsBase)]
 	public sealed class XmlnsDefinitionAttribute : Attribute
 	{
 		public XmlnsDefinitionAttribute (string xmlNamespace, string clrNamespace)
 		{
+            if (xmlNamespace == null)
+            {
+                throw new ArgumentNullException("xmlNamespace");
+            }
+            if (clrNamespace == null)
+            {
+                throw new ArgumentNullException("clrNamespace");
+            }
+
 			XmlNamespace = xmlNamespace;
 			ClrNamespace = clrNamespace;
 		}
