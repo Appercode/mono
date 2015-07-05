@@ -352,6 +352,13 @@ namespace System.Windows {
             return true;
         }
 
+        internal Expression GetExpression(DependencyProperty dp)
+        {
+            Expression result;
+            this.expressions.TryGetValue(dp, out result);
+            return result;
+        }
+
         /// <summary>
         /// Returns UIElement DO associated with
         /// </summary>
