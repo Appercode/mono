@@ -126,13 +126,24 @@ namespace System.Windows {
 #if WINDOWS_PHONE
                 converter = TypeDescriptor.GetConverter(this.propertyType);
 #else
-                // NullableConverter has no parameterless constructor, so trying to call GetConverter for nullable type raises MissingMethodExeption
-                converter = nullableUnderlyingType != null ? new NullableConverter(this.propertyType) : TypeDescriptor.GetConverter(this.propertyType);
+                // NullableConverter & ReferenceConverter have no parameterless constructor, so for some reason GetConverter might throw MissingMethodException
+                if (nullableUnderlyingType != null)
+                {
+                    converter = new NullableConverter(this.propertyType);
+                }
+                else if (this.propertyType.IsInterface)
+                {
+                    converter = new ReferenceConverter(this.propertyType);
+                }
+                else
+                {
+                    converter = TypeDescriptor.GetConverter(this.propertyType);
+                }
 #endif
             }
-            catch (Exception e)
+            catch (MissingMethodException e)
             {
-                Debug.WriteLine("Exception occured during geting converter for Type {1}: {0}", e, this.propertyType);
+                Debug.WriteLine("Exception occurred on attempt to get a converter for Type {1}: {0}", e, this.propertyType);
             }
 
             return ((!this.propertyType.IsValueType || nullableUnderlyingType != null) && value == null)
