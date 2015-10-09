@@ -16,9 +16,6 @@
 #include <mono/io-layer/io-layer.h>
 #include <mono/metadata/mempool-internals.h>
 
-
-extern mono_mutex_t mono_delegate_section;
-
 /*
  * If this is set, the memory belonging to appdomains is not freed when a domain is
  * unloaded, and assemblies loaded by the appdomain are not unloaded either. This
@@ -89,6 +86,10 @@ typedef struct {
 	 * associated with this handler.
 	 */
 	int clause_index;
+	uint32_t try_offset;
+	uint32_t try_len;
+	uint32_t handler_offset;
+	uint32_t handler_len;
 	union {
 		MonoClass *catch_class;
 		gpointer filter;
@@ -399,16 +400,12 @@ struct _MonoDomain {
 	MonoClass *sockaddr_class;
 	MonoClassField *sockaddr_data_field;
 
-	/* Used by threadpool.c */
-	MonoImage *system_image;
-	MonoClass *corlib_asyncresult_class;
-	MonoClass *socket_class;
-	MonoClass *ad_unloaded_ex_class;
-	MonoClass *process_class;
-
 	/* Cache function pointers for architectures  */
 	/* that require wrappers */
 	GHashTable *ftnptrs_hash;
+
+	/* Maps MonoMethod* to weak links to DynamicMethod objects */
+	GHashTable *method_to_dyn_method;
 
 	guint32 execution_context_field_offset;
 };
@@ -596,6 +593,9 @@ ves_icall_System_AppDomain_InternalIsFinalizingForUnload (gint32 domain_id);
 
 void
 ves_icall_System_AppDomain_InternalUnload          (gint32 domain_id);
+
+void
+ves_icall_System_AppDomain_DoUnhandledException (MonoException *exc);
 
 gint32
 ves_icall_System_AppDomain_ExecuteAssembly         (MonoAppDomain *ad, 

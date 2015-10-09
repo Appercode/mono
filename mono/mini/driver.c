@@ -384,7 +384,7 @@ mini_regression_step (MonoImage *image, int verbose, int *total_run, int *total,
 			run++;
 			start_time = g_timer_elapsed (timer, NULL);
 			comp_time -= start_time;
-			cfg = mini_method_compile (method, mono_get_optimizations_for_method (method, opt_flags), mono_get_root_domain (), JIT_FLAG_RUN_CCTORS, 0);
+			cfg = mini_method_compile (method, mono_get_optimizations_for_method (method, opt_flags), mono_get_root_domain (), JIT_FLAG_RUN_CCTORS, 0, -1);
 			comp_time += g_timer_elapsed (timer, NULL);
 			if (cfg->exception_type == MONO_EXCEPTION_NONE) {
 				if (verbose >= 2)
@@ -932,7 +932,7 @@ compile_all_methods_thread_main_inner (CompileAllThreadArgs *args)
 			g_print ("Compiling %d %s\n", count, desc);
 			g_free (desc);
 		}
-		cfg = mini_method_compile (method, mono_get_optimizations_for_method (method, args->opts), mono_get_root_domain (), 0, 0);
+		cfg = mini_method_compile (method, mono_get_optimizations_for_method (method, args->opts), mono_get_root_domain (), 0, 0, -1);
 		if (cfg->exception_type != MONO_EXCEPTION_NONE) {
 			printf ("Compilation of %s failed with exception '%s':\n", mono_method_full_name (cfg->method, TRUE), cfg->exception_message);
 			fail_count ++;
@@ -1151,6 +1151,7 @@ mini_usage_jitdeveloper (void)
 		 "    --inject-async-exc METHOD OFFSET Inject an asynchronous exception at METHOD\n"
 		 "    --verify-all           Run the verifier on all assemblies and methods\n"
 		 "    --full-aot             Avoid JITting any code\n"
+		 "    --llvmonly             Use LLVM compiled code only\n"
 		 "    --agent=ASSEMBLY[:ARG] Loads the specific agent assembly and executes its Main method with the given argument before loading the main assembly.\n"
 		 "    --no-x86-stack-align   Don't align stack on x86\n"
 		 "\n"
@@ -1205,6 +1206,9 @@ mini_usage (void)
 		"                           Currently the only supported option is 'disable'.\n"
 		"    --llvm, --nollvm       Controls whenever the runtime uses LLVM to compile code.\n"
 	        "    --gc=[sgen,boehm]      Select SGen or Boehm GC (runs mono or mono-sgen)\n"
+#ifdef TARGET_OSX
+		"    --arch=[32,64]         Select architecture (runs mono32 or mono64)\n"
+#endif
 #ifdef HOST_WIN32
 	        "    --mixed-mode           Enable mixed-mode image support.\n"
 #endif
@@ -1462,6 +1466,36 @@ switch_gc (char* argv[], const char* target_gc)
 #endif
 }
 
+#ifdef TARGET_OSX
+
+static void
+switch_arch (char* argv[], const char* target_arch)
+{
+	GString *path;
+	gsize arch_offset;
+
+	if ((strcmp (target_arch, "32") == 0 && strcmp (ARCHITECTURE, "x86") == 0) ||
+		(strcmp (target_arch, "64") == 0 && strcmp (ARCHITECTURE, "amd64") == 0)) {
+		return; /* matching arch loaded */
+	}
+
+	path = g_string_new (argv [0]);
+	arch_offset = path->len -2; /* last two characters */
+
+	/* Remove arch suffix if present */
+	if (strstr (&path->str[arch_offset], "32") || strstr (&path->str[arch_offset], "64")) {
+		g_string_truncate (path, arch_offset);
+	}
+
+	g_string_append (path, target_arch);
+
+	if (execvp (path->str, argv) < 0) {
+		fprintf (stderr, "Error: --arch=%s Failed to switch to '%s'.\n", target_arch, path->str);
+		exit (1);
+	}
+}
+
+#endif
 /**
  * mono_main:
  * @argc: number of arguments in the argv array
@@ -1587,7 +1621,15 @@ mono_main (int argc, char* argv[])
 			switch_gc (argv, "sgen");
 		} else if (strcmp (argv [i], "--gc=boehm") == 0) {
 			switch_gc (argv, "boehm");
-		} else if (strcmp (argv [i], "--config") == 0) {
+		}
+#ifdef TARGET_OSX
+		else if (strcmp (argv [i], "--arch=32") == 0) {
+			switch_arch (argv, "32");
+		} else if (strcmp (argv [i], "--arch=64") == 0) {
+			switch_arch (argv, "64");
+		}
+#endif
+		else if (strcmp (argv [i], "--config") == 0) {
 			if (i +1 >= argc){
 				fprintf (stderr, "error: --config requires a filename argument\n");
 				return 1;
@@ -1646,6 +1688,9 @@ mono_main (int argc, char* argv[])
 			mono_verifier_enable_verify_all ();
 		} else if (strcmp (argv [i], "--full-aot") == 0) {
 			mono_aot_only = TRUE;
+		} else if (strcmp (argv [i], "--llvmonly") == 0) {
+			mono_aot_only = TRUE;
+			mono_llvm_only = TRUE;
 		} else if (strcmp (argv [i], "--print-vtable") == 0) {
 			mono_print_vtable = TRUE;
 		} else if (strcmp (argv [i], "--stats") == 0) {
@@ -2066,10 +2111,10 @@ mono_main (int argc, char* argv[])
 			(method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL)) {
 			MonoMethod *nm;
 			nm = mono_marshal_get_native_wrapper (method, TRUE, FALSE);
-			cfg = mini_method_compile (nm, opt, mono_get_root_domain (), 0, part);
+			cfg = mini_method_compile (nm, opt, mono_get_root_domain (), 0, part, -1);
 		}
 		else
-			cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, part);
+			cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, part, -1);
 		if ((mono_graph_options & MONO_GRAPH_CFG_SSA) && !(cfg->comp_done & MONO_COMP_SSA)) {
 			g_warning ("no SSA info available (use -O=deadce)");
 			return 1;
@@ -2101,7 +2146,7 @@ mono_main (int argc, char* argv[])
 				opt = opt_sets [i];
 				g_timer_start (timer);
 				for (j = 0; j < count; ++j) {
-					cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0);
+					cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0, -1);
 					mono_destroy_compile (cfg);
 				}
 				g_timer_stop (timer);
@@ -2124,12 +2169,12 @@ mono_main (int argc, char* argv[])
 					(method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL))
 					method = mono_marshal_get_native_wrapper (method, TRUE, FALSE);
 
-				cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0);
+				cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0, -1);
 				mono_destroy_compile (cfg);
 			}
 		}
 	} else {
-		cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0);
+		cfg = mini_method_compile (method, opt, mono_get_root_domain (), 0, 0, -1);
 		mono_destroy_compile (cfg);
 	}
 #endif
@@ -2181,6 +2226,8 @@ void
 mono_jit_set_aot_only (gboolean val)
 {
 	mono_aot_only = val;
+	if (mono_aot_only)
+		mono_llvm_only = TRUE;
 }
 
 void

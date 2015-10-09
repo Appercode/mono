@@ -19,7 +19,7 @@
 #include "mono/metadata/appdomain.h"
 
 struct MonoMethodDesc {
-	char *namespace;
+	char *name_space;
 	char *klass;
 	char *name;
 	char *args;
@@ -82,9 +82,11 @@ append_class_name (GString *res, MonoClass *class, gboolean include_namespace)
 		append_class_name (res, class->nested_in, include_namespace);
 		g_string_append_c (res, '/');
 	}
-	if (include_namespace && *(class->name_space))
-		g_string_append_printf (res, "%s.", class->name_space);
-	g_string_append_printf (res, "%s", class->name);
+	if (include_namespace && *(class->name_space)) {
+		g_string_append (res, class->name_space);
+		g_string_append_c (res, '.');
+	}
+	g_string_append (res, class->name);
 }
 
 static MonoClass*
@@ -342,7 +344,7 @@ mono_method_desc_new (const char *name, gboolean include_namespace)
 	result->include_namespace = include_namespace;
 	result->name = method_name;
 	result->klass = class_name;
-	result->namespace = use_namespace? class_nspace: NULL;
+	result->name_space = use_namespace? class_nspace: NULL;
 	result->args = use_args? use_args: NULL;
 	if (strstr (result->name, "*"))
 		result->name_glob = TRUE;
@@ -371,7 +373,7 @@ mono_method_desc_from_method (MonoMethod *method)
 	result->include_namespace = TRUE;
 	result->name = g_strdup (method->name);
 	result->klass = g_strdup (method->klass->name);
-	result->namespace = g_strdup (method->klass->name_space);
+	result->name_space = g_strdup (method->klass->name_space);
 
 	return result;
 }
@@ -385,8 +387,8 @@ mono_method_desc_from_method (MonoMethod *method)
 void
 mono_method_desc_free (MonoMethodDesc *desc)
 {
-	if (desc->namespace)
-		g_free (desc->namespace);
+	if (desc->name_space)
+		g_free (desc->name_space);
 	else if (desc->klass)
 		g_free (desc->klass);
 	g_free (desc);
@@ -452,7 +454,7 @@ match_class (MonoMethodDesc *desc, int pos, MonoClass *klass)
 	if (!p) {
 		if (strncmp (desc->klass, klass->name, pos))
 			return FALSE;
-		if (desc->namespace && strcmp (desc->namespace, klass->name_space))
+		if (desc->name_space && strcmp (desc->name_space, klass->name_space))
 			return FALSE;
 		return TRUE;
 	}
@@ -497,14 +499,14 @@ mono_method_desc_search_in_image (MonoMethodDesc *desc, MonoImage *image)
 	int i;
 
 	/* Handle short names for system classes */
-	if (!desc->namespace && image == mono_defaults.corlib) {
+	if (!desc->name_space && image == mono_defaults.corlib) {
 		klass = find_system_class (desc->klass);
 		if (klass)
 			return mono_method_desc_search_in_class (desc, klass);
 	}
 
-	if (desc->namespace && desc->klass) {
-		klass = mono_class_from_name (image, desc->namespace, desc->klass);
+	if (desc->name_space && desc->klass) {
+		klass = mono_class_from_name (image, desc->name_space, desc->klass);
 		if (!klass)
 			return NULL;
 		return mono_method_desc_search_in_class (desc, klass);
@@ -1037,6 +1039,9 @@ mono_class_describe_statics (MonoClass* klass)
 			if (field->type->attrs & FIELD_ATTRIBUTE_LITERAL)
 				continue;
 			if (!(field->type->attrs & (FIELD_ATTRIBUTE_STATIC | FIELD_ATTRIBUTE_HAS_FIELD_RVA)))
+				continue;
+			// Special static fields don't have a domain-level static slot
+			if (mono_class_field_is_special_static (field))
 				continue;
 
 			field_ptr = (const char*)addr + field->offset;

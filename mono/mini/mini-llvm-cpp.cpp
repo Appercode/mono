@@ -45,7 +45,6 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
-//#include <llvm/LinkAllPasses.h>
 
 #include "llvm-c/Core.h"
 #include "llvm-c/ExecutionEngine.h"
@@ -59,6 +58,23 @@
 using namespace llvm;
 
 #ifndef MONO_CROSS_COMPILE
+
+void
+mono_llvm_cpp_throw_exception (void)
+{
+	gint32 *ex = NULL;
+
+	/* The generated code catches an int32* */
+	throw ex;
+}
+
+static void (*unhandled_exception)() = default_mono_llvm_unhandled_exception;
+
+void
+mono_llvm_set_unhandled_exception_handler (void)
+{
+	std::set_terminate (unhandled_exception);
+}
 
 class MonoJITMemoryManager : public JITMemoryManager
 {
@@ -425,10 +441,30 @@ mono_llvm_build_fence (LLVMBuilderRef builder, BarrierKind kind)
 }
 
 void
+mono_llvm_set_must_tail (LLVMValueRef call_ins)
+{
+	CallInst *ins = (CallInst*)unwrap (call_ins);
+
+	ins->setTailCallKind (CallInst::TailCallKind::TCK_MustTail);
+}
+
+void
 mono_llvm_replace_uses_of (LLVMValueRef var, LLVMValueRef v)
 {
 	Value *V = ConstantExpr::getTruncOrBitCast (unwrap<Constant> (v), unwrap (var)->getType ());
 	unwrap (var)->replaceAllUsesWith (V);
+}
+
+LLVMValueRef
+mono_llvm_create_constant_data_array (const uint8_t *data, int len)
+{
+	return wrap(ConstantDataArray::get (*unwrap(LLVMGetGlobalContext ()), makeArrayRef(data, len)));
+}
+
+void
+mono_llvm_set_is_constant (LLVMValueRef global_var)
+{
+	unwrap<GlobalVariable>(global_var)->setConstant (true);
 }
 
 static cl::list<const PassInfo*, bool, PassNameParser>
@@ -628,11 +664,7 @@ mono_llvm_create_ee (LLVMModuleProviderRef MP, AllocCodeMemoryCb *alloc_cb, Func
   // EngineBuilder no longer has a copy assignment operator (?)
   std::unique_ptr<Module> Owner(unwrap(MP));
   EngineBuilder b (std::move(Owner));
-#ifdef TARGET_AMD64
-  ExecutionEngine *EE = b.setJITMemoryManager (mono_mm).setTargetOptions (opts).setAllocateGVsWithCode (true).setMCPU (cpu_name).setCodeModel (CodeModel::Large).create ();
-#else
   ExecutionEngine *EE = b.setJITMemoryManager (mono_mm).setTargetOptions (opts).setAllocateGVsWithCode (true).setMCPU (cpu_name).create ();
-#endif
 
   g_assert (EE);
   mono_ee->EE = EE;
@@ -733,5 +765,6 @@ LLVMGetPointerToGlobal(LLVMExecutionEngineRef EE, LLVMValueRef Global)
 	g_assert_not_reached ();
 	return NULL;
 }
+
 
 #endif /* !MONO_CROSS_COMPILE */

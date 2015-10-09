@@ -6,6 +6,7 @@
 //   Martin Willemoes Hansen (mwh@sysrq.dk)
 //   Gonzalo Paniagua Javier (gonzalo@ximian.com)
 //   Andres G. Aragoneses (andres@7digital.com)
+//   Bogdanov Kirill (bogdanov@macroscop.com)
 //
 // (C) 2003 Martin Willemoes Hansen
 // Copyright (c) 2005 Novell, Inc. (http://www.novell.com
@@ -24,6 +25,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
+using System.Reflection;
 using Mono.Security.Authenticode;
 #if !MOBILE
 using Mono.Security.Protocol.Tls;
@@ -70,7 +72,7 @@ namespace MonoTests.System.Net
 			Assert.AreEqual ("OK", res.StatusCode.ToString (), "#B1");
 			Assert.AreEqual ("OK", res.StatusDescription, "#B2");
 
-			Assert.AreEqual ("text/html; charset=ISO-8859-1", res.Headers.Get ("Content-Type"), "#C1");
+			Assert.IsTrue (res.Headers.Get ("Content-Type").StartsWith ("text/html; charset=", StringComparison.OrdinalIgnoreCase), "#C1");
 			Assert.IsNotNull (res.LastModified, "#C2");
 			Assert.AreEqual (0, res.Cookies.Count, "#C3");
 
@@ -123,14 +125,15 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
-		[Category("InetAccess")]
+		//[Category("InetAccess")]
+		[Category ("NotWorking")] // Disabled until a server that meets requirements is found
 		public void Cookies1 ()
 		{
 			// The purpose of this test is to ensure that the cookies we get from a request
 			// are stored in both, the CookieCollection in HttpWebResponse and the CookieContainer
 			// in HttpWebRequest.
 			// If this URL stops sending *one* and only one cookie, replace it.
-			string url = "http://www.elmundo.es";
+			string url = "http://xamarin.com";
 			CookieContainer cookies = new CookieContainer ();
 			HttpWebRequest req = (HttpWebRequest) WebRequest.Create (url);
 			req.KeepAlive = false;
@@ -2300,6 +2303,70 @@ namespace MonoTests.System.Net
 
 			return;
 		}
+		
+		[Test]
+		public void TestLargeDataReading ()
+		{
+			int near2GBStartPosition = rand.Next (int.MaxValue - 500, int.MaxValue);
+			AutoResetEvent readyGetLastPortionEvent = new AutoResetEvent (false);
+			Exception testException = null;
+
+			DoRequest (
+			(request, waitHandle) =>
+			{
+				try
+				{
+					const int timeoutMs = 5000;
+
+					request.Timeout = timeoutMs;
+					request.ReadWriteTimeout = timeoutMs;
+
+					WebResponse webResponse = request.GetResponse ();
+					Stream webResponseStream = webResponse.GetResponseStream ();
+					Assert.IsNotNull (webResponseStream, null, "#1");
+					
+					Type webConnectionStreamType = webResponseStream.GetType ();
+					FieldInfo totalReadField = webConnectionStreamType.GetField ("totalRead", BindingFlags.NonPublic | BindingFlags.Instance);
+					Assert.IsNotNull (totalReadField, "#2");
+					totalReadField.SetValue (webResponseStream, near2GBStartPosition);
+					
+					byte[] readBuffer = new byte[int.MaxValue - near2GBStartPosition];
+					Assert.AreEqual (webResponseStream.Read (readBuffer, 0, readBuffer.Length), readBuffer.Length, "#3");
+					readyGetLastPortionEvent.Set ();
+					Assert.IsTrue (webResponseStream.Read (readBuffer, 0, readBuffer.Length) > 0);
+					readyGetLastPortionEvent.Set ();
+					
+					webResponse.Close();
+				}
+				catch (Exception e)
+				{
+					testException = e;
+				}
+				finally
+				{
+					waitHandle.Set ();
+				}
+			},
+			processor =>
+			{
+				processor.Request.InputStream.Close ();
+				
+				HttpListenerResponse response = processor.Response;
+				response.SendChunked = true;
+				
+				Stream outputStream = response.OutputStream;
+				var writeBuffer = new byte[int.MaxValue - near2GBStartPosition];
+				outputStream.Write (writeBuffer, 0, writeBuffer.Length);
+				readyGetLastPortionEvent.WaitOne ();
+				outputStream.Write (writeBuffer, 0, writeBuffer.Length);
+				readyGetLastPortionEvent.WaitOne ();
+				
+				response.Close();
+			});
+
+			if (testException != null)
+				throw testException;
+		}
 
 		void DoRequest (Action<HttpWebRequest, EventWaitHandle> request)
 		{
@@ -2335,7 +2402,6 @@ namespace MonoTests.System.Net
 			}
 		}
 
-#if NET_4_0
 		[Test]
 		[ExpectedException (typeof (ArgumentNullException))]
 		public void NullHost ()
@@ -2495,7 +2561,6 @@ namespace MonoTests.System.Net
 				;
 			}
 		}
-#endif
 
 #if NET_4_5
 		[Test]
@@ -2814,6 +2879,7 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+		[Category("MobileNotWorking")]
 		public void BeginWrite_Request_Aborted ()
 		{
 			IPEndPoint ep = NetworkHelpers.LocalEphemeralEndPoint ();
@@ -3307,7 +3373,6 @@ namespace MonoTests.System.Net
 			}
 		}
 
-#if NET_4_0
 		[Test]
 		// Bug6737
 		// This test is supposed to fail prior to .NET 4.0
@@ -3320,7 +3385,6 @@ namespace MonoTests.System.Net
 			var gr = wr.BeginGetResponse (delegate { }, null);
 			Assert.AreEqual (true, gr.AsyncWaitHandle.WaitOne (5000), "#1");
 		}
-#endif
 	}
 
 	static class StreamExtensions {

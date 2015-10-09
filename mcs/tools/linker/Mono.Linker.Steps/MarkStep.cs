@@ -123,7 +123,9 @@ namespace Mono.Linker.Steps {
 		{
 			while (!QueueIsEmpty ()) {
 				MethodDefinition method = (MethodDefinition) _methods.Dequeue ();
+				Annotations.Push (method);
 				ProcessMethod (method);
+				Annotations.Pop ();
 			}
 		}
 
@@ -355,7 +357,6 @@ namespace Mono.Linker.Steps {
 			if ((git != null) && git.HasGenericArguments) {
 				foreach (var ga in git.GenericArguments)
 					MarkWithResolvedScope (ga);
-				return;
 			}
 			// we cannot set the Scope of a TypeSpecification but it's element type can be set
 			// e.g. System.String[] -> System.String
@@ -483,6 +484,8 @@ namespace Mono.Linker.Steps {
 			if (CheckProcessed (type))
 				return null;
 
+			Annotations.Push (type);
+
 			MarkScope (type.Scope);
 			MarkType (type.BaseType);
 			MarkType (type.DeclaringType);
@@ -514,11 +517,20 @@ namespace Mono.Linker.Steps {
 				MarkMethodsIf (type.Methods, IsStaticConstructorPredicate);
 			}
 
+			DoAdditionalTypeProcessing (type);
+
+			Annotations.Pop ();
+
 			Annotations.Mark (type);
 
 			ApplyPreserveInfo (type);
 
 			return type;
+		}
+
+		// Allow subclassers to mark additional things when marking a method
+		protected virtual void DoAdditionalTypeProcessing (TypeDefinition method)
+		{
 		}
 
 		void MarkTypeSpecialCustomAttributes (TypeDefinition type)
@@ -570,17 +582,21 @@ namespace Mono.Linker.Steps {
 			return argument != null;
 		}
 
-		protected void MarkNamedMethod (TypeDefinition type, string method_name)
+		protected int MarkNamedMethod (TypeDefinition type, string method_name)
 		{
 			if (!type.HasMethods)
-				return;
+				return 0;
 
+			int count = 0;
 			foreach (MethodDefinition method in type.Methods) {
 				if (method.Name != method_name)
 					continue;
 
 				MarkMethod (method);
+				count++;
 			}
+
+			return count;
 		}
 
 		void MarkSoapHeader (MethodDefinition method, CustomAttribute attribute)
@@ -867,6 +883,7 @@ namespace Mono.Linker.Steps {
 			if (reference.DeclaringType is ArrayType)
 				return null;
 
+			Annotations.Push (reference);
 			if (reference.DeclaringType is GenericInstanceType)
 				MarkType (reference.DeclaringType);
 
@@ -875,13 +892,18 @@ namespace Mono.Linker.Steps {
 
 			MethodDefinition method = ResolveMethodDefinition (reference);
 
-			if (method == null)
+			if (method == null) {
+				Annotations.Pop ();
 				throw new ResolutionException (reference);
+			}
 
 			if (Annotations.GetAction (method) == MethodAction.Nothing)
 				Annotations.SetAction (method, MethodAction.Parse);
 
 			EnqueueMethod (method);
+
+			Annotations.Pop ();
+
 			return method;
 		}
 
@@ -957,9 +979,16 @@ namespace Mono.Linker.Steps {
 			if (ShouldParseMethodBody (method))
 				MarkMethodBody (method.Body);
 
+			DoAdditionalMethodProcessing (method);
+
 			Annotations.Mark (method);
 
 			ApplyPreserveMethods (method);
+		}
+
+		// Allow subclassers to mark additional things when marking a method
+		protected virtual void DoAdditionalMethodProcessing (MethodDefinition method)
+		{
 		}
 
 		void MarkBaseMethods (MethodDefinition method)

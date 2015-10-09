@@ -1417,6 +1417,7 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+		[Category ("AndroidNotWorking")] // Fails when ran as part of the entire BCL test suite. Works when only this fixture is ran
 		public void UploadValues1 ()
 		{
 			IPEndPoint ep = NetworkHelpers.LocalEphemeralEndPoint ();
@@ -1783,6 +1784,7 @@ namespace MonoTests.System.Net
 		 
 #if NET_4_5
 		[Test]
+		[Category ("AndroidNotWorking")] // Fails when ran as part of the entire BCL test suite. Works when only this fixture is ran
 		public void UploadStringAsyncCancelEvent ()
 		{
 			UploadAsyncCancelEventTest (9301, (webClient, uri, cancelEvent) =>
@@ -1799,6 +1801,7 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+		[Category ("AndroidNotWorking")] // Fails when ran as part of the entire BCL test suite. Works when only this fixture is ran
 		public void UploadDataAsyncCancelEvent ()
 		{
 			UploadAsyncCancelEventTest (9302, (webClient, uri, cancelEvent) =>
@@ -1814,6 +1817,7 @@ namespace MonoTests.System.Net
 		}
 		
 		[Test]
+		[Category ("AndroidNotWorking")] // Fails when ran as part of the entire BCL test suite. Works when only this fixture is ran
 		public void UploadValuesAsyncCancelEvent ()
 		{
 			UploadAsyncCancelEventTest (9303, (webClient, uri, cancelEvent) =>
@@ -1829,6 +1833,7 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+		[Category ("AndroidNotWorking")] // Fails when ran as part of the entire BCL test suite. Works when only this fixture is ran
 		public void UploadFileAsyncCancelEvent ()
 		{
 			UploadAsyncCancelEventTest (9304,(webClient, uri, cancelEvent) =>
@@ -1847,6 +1852,7 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+		[Category ("AndroidNotWorking")] // Test suite hangs if the tests runs as part of the entire BCL suite. Works when only this fixture is ran
 		public void UploadFileAsyncContentType ()
 		{
 			var serverUri = "http://localhost:13370/";
@@ -1869,7 +1875,6 @@ namespace MonoTests.System.Net
 		}
 #endif
 
-#if NET_4_0
 		public void UploadAsyncCancelEventTest (int port, Action<WebClient, Uri, EventWaitHandle> uploadAction)
 		{
 			var ep = NetworkHelpers.LocalEphemeralEndPoint ();
@@ -1893,6 +1898,5 @@ namespace MonoTests.System.Net
 				Assert.IsTrue (cancelEvent.WaitOne (1000));
 			}
 		}
-#endif
 	}
 }
