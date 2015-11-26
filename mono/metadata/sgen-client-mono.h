@@ -88,10 +88,10 @@ struct _SgenClientThreadInfo {
 #include "metadata/profiler-private.h"
 #include "utils/dtrace.h"
 #include "utils/mono-counters.h"
-#include "utils/mono-logger-internal.h"
+#include "utils/mono-logger-internals.h"
 #include "utils/mono-time.h"
 #include "utils/mono-semaphore.h"
-#include "metadata/sgen-bridge-internal.h"
+#include "metadata/sgen-bridge-internals.h"
 
 extern void mono_sgen_register_moved_object (void *obj, void *destination);
 extern void mono_sgen_gc_event_moves (void);
@@ -244,14 +244,14 @@ extern gboolean sgen_mono_xdomain_checks;
 static gboolean G_GNUC_UNUSED
 sgen_client_object_has_critical_finalizer (GCObject *obj)
 {
-	MonoClass *class;
+	MonoClass *klass;
 
 	if (!mono_defaults.critical_finalizer_object)
 		return FALSE;
 
-	class = SGEN_LOAD_VTABLE (obj)->klass;
+	klass = SGEN_LOAD_VTABLE (obj)->klass;
 
-	return mono_class_has_parent_fast (class, mono_defaults.critical_finalizer_object);
+	return mono_class_has_parent_fast (klass, mono_defaults.critical_finalizer_object);
 }
 
 const char* sgen_client_vtable_get_namespace (GCVTable vtable);

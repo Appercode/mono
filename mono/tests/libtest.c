@@ -524,6 +524,19 @@ mono_test_marshal_out_byref_array_out_size_param (int **out_arr, int *out_len)
 	return 0;
 }
 
+LIBTEST_API int STDCALL
+mono_test_marshal_out_lparray_out_size_param (int *arr, int *out_len)
+{
+	int i, len;
+
+	len = 4;
+	for (i = 0; i < len; ++i)
+		arr [i] = i;
+	*out_len = len;
+
+	return 0;
+}
+
 LIBTEST_API int STDCALL  
 mono_test_marshal_inout_nonblittable_array (gunichar2 *a1)
 {
@@ -874,6 +887,18 @@ LIBTEST_API SimpleDelegate STDCALL
 mono_test_marshal_return_delegate (SimpleDelegate delegate)
 {
 	return delegate;
+}
+
+typedef int DelegateByrefDelegate (void *);
+
+LIBTEST_API int STDCALL
+mono_test_marshal_delegate_ref_delegate (DelegateByrefDelegate del)
+{
+	int (*ptr) (int i);
+
+	del (&ptr);
+
+	return ptr (54);
 }
 
 static int STDCALL
@@ -3545,8 +3570,8 @@ mono_test_marshal_lookup_symbol (const char *symbol_name)
 	return lookup_mono_symbol (symbol_name);
 }
 
-#define MONO_BEGIN_EFRAME { void *__region_cookie = mono_threads_enter_gc_unsafe_region ? mono_threads_enter_gc_unsafe_region () : NULL;
-#define MONO_END_EFRAME if (mono_threads_exit_gc_unsafe_region) mono_threads_exit_gc_unsafe_region (__region_cookie); }
+#define MONO_BEGIN_EFRAME { void *__dummy; void *__region_cookie = mono_threads_enter_gc_unsafe_region ? mono_threads_enter_gc_unsafe_region (&__dummy) : NULL;
+#define MONO_END_EFRAME if (mono_threads_exit_gc_unsafe_region) mono_threads_exit_gc_unsafe_region (__region_cookie, &__dummy); }
 
 /**
  * test_method_thunk:
@@ -3572,10 +3597,10 @@ test_method_thunk (int test_id, gpointer test_method_handle, gpointer create_obj
 	gpointer (*mono_object_unbox)(gpointer)
 		= lookup_mono_symbol ("mono_object_unbox");
 
-	gpointer* (*mono_threads_enter_gc_unsafe_region) ()
+	gpointer (*mono_threads_enter_gc_unsafe_region) (gpointer)
 		= lookup_mono_symbol ("mono_threads_enter_gc_unsafe_region");
 
-	gpointer (*mono_threads_exit_gc_unsafe_region) (gpointer *)
+	void (*mono_threads_exit_gc_unsafe_region) (gpointer, gpointer)
 		= lookup_mono_symbol ("mono_threads_exit_gc_unsafe_region");
 
 	

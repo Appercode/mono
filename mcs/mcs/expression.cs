@@ -130,8 +130,12 @@ namespace Mono.CSharp
 			}
 
 			var constant = res as Constant;
-			if (constant != null && constant.IsLiteral)
+			if (constant != null && constant.IsLiteral) {
+				if (res is NullLiteral)
+					return res;
+				
 				return Constant.CreateConstantFromValue (res.Type, constant.GetValue (), expr.Location);
+			}
 
 			if (conditional_access_receiver) {
 				expr = res;
@@ -7089,8 +7093,11 @@ namespace Mono.CSharp
 			// Next, evaluate all the expressions in the argument list
 			//
 			bool dynamic_arg = false;
-			if (arguments != null)
-				arguments.Resolve (ec, out dynamic_arg);
+			if (arguments != null) {
+				using (ec.With (ResolveContext.Options.DontSetConditionalAccessReceiver, false)) {
+					arguments.Resolve (ec, out dynamic_arg);
+				}
+			}
 
 			TypeSpec expr_type = member_expr.Type;
 			if (expr_type.BuiltinType == BuiltinTypeSpec.Type.Dynamic)
@@ -10853,7 +10860,9 @@ namespace Mono.CSharp
 			eclass = ExprClass.IndexerAccess;
 
 			bool dynamic;
-			arguments.Resolve (rc, out dynamic);
+			using (rc.With (ResolveContext.Options.DontSetConditionalAccessReceiver, false)) {
+				arguments.Resolve (rc, out dynamic);
+			}
 
 			if (indexers == null && InstanceExpression.Type.BuiltinType == BuiltinTypeSpec.Type.Dynamic) {
 				dynamic = true;
@@ -11353,7 +11362,10 @@ namespace Mono.CSharp
 
 				single_spec = single_spec.Next;
 			} else if (single_spec.IsPointer) {
-				if (!TypeManager.VerifyUnmanaged (ec.Module, type, loc))
+				//
+				// Declared fields cannot have unmanaged check done before all types are defined
+				//
+				if (!(ec.CurrentMemberDefinition is Field) && !TypeManager.VerifyUnmanaged (ec.Module, type, loc))
 					return null;
 
 				if (!ec.IsUnsafe) {

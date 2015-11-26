@@ -27,11 +27,11 @@
 #include "mono/metadata/monitor.h"
 #include "mono/metadata/metadata-internals.h"
 #include "mono/metadata/domain-internals.h"
-#include "mono/metadata/gc-internal.h"
+#include "mono/metadata/gc-internals.h"
 #include "mono/metadata/threads-types.h"
 #include "mono/metadata/string-icalls.h"
 #include "mono/metadata/attrdefs.h"
-#include "mono/metadata/gc-internal.h"
+#include "mono/metadata/gc-internals.h"
 #include "mono/utils/mono-counters.h"
 #include "mono/utils/strenc.h"
 #include "mono/utils/atomic.h"
@@ -1689,13 +1689,13 @@ gpointer
 ves_icall_System_ComObject_GetInterfaceInternal (MonoComObject* obj, MonoReflectionType* type, MonoBoolean throw_exception)
 {
 #ifndef DISABLE_COM
-	MonoClass *class = mono_type_get_class (type->type);
-	if (!mono_class_init (class)) {
-		mono_set_pending_exception (mono_class_get_exception_for_failure (class));
+	MonoClass *klass = mono_type_get_class (type->type);
+	if (!mono_class_init (klass)) {
+		mono_set_pending_exception (mono_class_get_exception_for_failure (klass));
 		return NULL;
 	}
 
-	return cominterop_get_interface (obj, class, (gboolean)throw_exception);
+	return cominterop_get_interface (obj, klass, (gboolean)throw_exception);
 #else
 	g_assert_not_reached ();
 #endif

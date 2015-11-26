@@ -16,7 +16,7 @@
 
 #include <mono/utils/mono-threads.h>
 #include <mono/utils/mono-threads-posix-signals.h>
-#include <mono/metadata/gc-internal.h>
+#include <mono/metadata/gc-internals.h>
 
 #include <errno.h>
 
@@ -340,16 +340,6 @@ mono_threads_platform_register (MonoThreadInfo *info)
 
 void
 mono_threads_platform_free (MonoThreadInfo *info)
-{
-}
-
-void
-mono_threads_core_begin_global_suspend (void)
-{
-}
-
-void
-mono_threads_core_end_global_suspend (void)
 {
 }
 

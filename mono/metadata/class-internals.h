@@ -1,8 +1,8 @@
 /* 
  * Copyright 2012 Xamarin Inc
  */
-#ifndef __MONO_METADATA_CLASS_INTERBALS_H__
-#define __MONO_METADATA_CLASS_INTERBALS_H__
+#ifndef __MONO_METADATA_CLASS_INTERNALS_H__
+#define __MONO_METADATA_CLASS_INTERNALS_H__
 
 #include <mono/metadata/class.h>
 #include <mono/metadata/object.h>
@@ -583,8 +583,13 @@ struct _MonoGenericParam {
 typedef struct {
 	MonoClass *pklass;		/* The corresponding `MonoClass'. */
 	const char *name;
+
+	// See GenericParameterAttributes
 	guint16 flags;
+
 	guint32 token;
+
+	// Constraints on type parameters
 	MonoClass** constraints; /* NULL means end of list */
 } MonoGenericParamInfo;
 
@@ -1135,14 +1140,14 @@ MonoClass*	\
 mono_class_get_##shortname##_class (void)	\
 {	\
 	static MonoClass *tmp_class;	\
-	MonoClass *class = tmp_class;	\
-	if (!class) {	\
-		class = mono_class_from_name (mono_defaults.corlib, #namespace, #name);	\
-		g_assert (class);	\
+	MonoClass *klass = tmp_class;	\
+	if (!klass) {	\
+		klass = mono_class_from_name (mono_defaults.corlib, #namespace, #name);	\
+		g_assert (klass);	\
 		mono_memory_barrier ();	\
-		tmp_class = class;	\
+		tmp_class = klass;	\
 	}	\
-	return class;	\
+	return klass;	\
 }
 
 #define GENERATE_STATIC_GET_CLASS_WITH_CACHE(shortname,namespace,name) \
@@ -1411,4 +1416,4 @@ mono_field_from_token_checked (MonoImage *image, uint32_t token, MonoClass **ret
 gpointer
 mono_ldtoken_checked (MonoImage *image, guint32 token, MonoClass **handle_class, MonoGenericContext *context, MonoError *error);
 
-#endif /* __MONO_METADATA_CLASS_INTERBALS_H__ */
+#endif /* __MONO_METADATA_CLASS_INTERNALS_H__ */

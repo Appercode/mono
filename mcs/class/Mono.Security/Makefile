@@ -16,3 +16,9 @@ $(the_libdir_base)bare/System.dll:
 	(cd ../System; $(MAKE) $@)
 
 .NOTPARALLEL: $(the_libdir_base)bare/System.dll
+
+EXTRA_DISTFILES = Mono.Security.Interface/README.md
+
+#
+# Update this comment to trigger a build in System
+#

@@ -129,10 +129,11 @@ common_sources = \
 	file-io.h		\
 	filewatcher.c		\
 	filewatcher.h		\
-	gc-internal.h		\
+	gc-internals.h		\
 	icall.c			\
 	icall-def.h		\
 	image.c			\
+	image-internals.h	\
 	jit-info.c		\
 	loader.c		\
 	locales.c		\
@@ -237,7 +238,7 @@ sgen_sources = \
 	sgen-os-coop.c		\
 	sgen-bridge.c		\
 	sgen-bridge.h		\
-	sgen-bridge-internal.h	\
+	sgen-bridge-internals.h	\
 	sgen-old-bridge.c		\
 	sgen-new-bridge.c		\
 	sgen-tarjan-bridge.c		\

@@ -44,10 +44,10 @@
 #include <stdlib.h>
 
 #include "sgen/sgen-gc.h"
-#include "sgen-bridge-internal.h"
+#include "sgen-bridge-internals.h"
 #include "sgen/sgen-hash-table.h"
 #include "sgen/sgen-qsort.h"
-#include "utils/mono-logger-internal.h"
+#include "utils/mono-logger-internals.h"
 
 MonoGCBridgeCallbacks bridge_callbacks;
 static SgenBridgeProcessor bridge_processor;
@@ -407,9 +407,9 @@ sgen_bridge_processing_finish (int generation)
 }
 
 MonoGCBridgeObjectKind
-sgen_bridge_class_kind (MonoClass *class)
+sgen_bridge_class_kind (MonoClass *klass)
 {
-	return bridge_processor.class_kind (class);
+	return bridge_processor.class_kind (klass);
 }
 
 void
@@ -442,9 +442,9 @@ set_dump_prefix (const char *prefix)
 static const char *bridge_class;
 
 static MonoGCBridgeObjectKind
-bridge_test_bridge_class_kind (MonoClass *class)
+bridge_test_bridge_class_kind (MonoClass *klass)
 {
-	if (!strcmp (bridge_class, class->name))
+	if (!strcmp (bridge_class, klass->name))
 		return GC_BRIDGE_TRANSPARENT_BRIDGE_CLASS;
 	return GC_BRIDGE_TRANSPARENT_CLASS;
 }

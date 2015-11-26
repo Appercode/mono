@@ -51,7 +51,10 @@ mobile_common_dirs := \
 	System.Windows \
 	System.Xml.Serialization \
 	Mono.CSharp	\
-	Microsoft.CSharp
+	Microsoft.CSharp \
+	Mono.Security.Providers.DotNet	\
+	Mono.Security.Providers.OldTls \
+	Mono.Security.Providers.NewSystemSource
 
 mobile_static_dirs := \
 	$(mobile_common_dirs)	\
@@ -81,6 +84,9 @@ monotouch_runtime_dirs := \
 	System.Core \
 	System.XML \
 	Mono.CSharp
+
+monotouch_watch_runtime_dirs := $(monotouch_runtime_dirs)
+monotouch_tv_runtime_dirs := $(monotouch_runtime_dirs)
 
 xammac_4_5_dirs := \
 	corlib	\
@@ -124,6 +130,9 @@ xammac_4_5_dirs := \
 	Mono.CompilerServices.SymbolWriter	\
 	System.Data.Linq		\
 	System.Net.Http \
+	Mono.Security.Providers.DotNet \
+	Mono.Security.Providers.OldTls \
+	Mono.Security.Providers.NewSystemSource \
 	$(pcl_facade_dirs)
 
 net_4_x_dirs := \
@@ -251,6 +260,9 @@ net_4_x_parallel_dirs := \
 	System.ComponentModel.Composition.4.5 \
 	System.Windows \
 	System.Xml.Serialization \
+	Mono.Security.Providers.DotNet \
+	Mono.Security.Providers.OldTls \
+	Mono.Security.Providers.NewSystemSource \
 	System.DirectoryServices.Protocols	\
 	RabbitMQ.Client			\
 	Microsoft.VisualC		\
@@ -274,6 +286,8 @@ monotouch_SUBDIRS := $(monotouch_dirs)
 monotouch_watch_SUBDIRS := $(monotouch_watch_dirs)
 monotouch_tv_SUBDIRS    := $(monotouch_tv_dirs)
 monotouch_runtime_SUBDIRS := $(monotouch_runtime_dirs)
+monotouch_watch_runtime_SUBDIRS := $(monotouch_watch_runtime_dirs)
+monotouch_tv_runtime_SUBDIRS := $(monotouch_tv_runtime_dirs)
 mobile_static_SUBDIRS := $(mobile_static_dirs)
 mobile_SUBDIRS := $(mobile_dynamic_dirs)
 xammac_SUBDIRS := $(xammac_dirs)

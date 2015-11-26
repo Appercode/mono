@@ -44,11 +44,11 @@
 #include <stdlib.h>
 
 #include "sgen/sgen-gc.h"
-#include "sgen-bridge-internal.h"
+#include "sgen-bridge-internals.h"
 #include "sgen/sgen-hash-table.h"
 #include "sgen/sgen-qsort.h"
 #include "sgen/sgen-client.h"
-#include "utils/mono-logger-internal.h"
+#include "utils/mono-logger-internals.h"
 
 typedef struct {
 	int size;
@@ -400,9 +400,9 @@ enable_accounting (void)
 }
 
 static MonoGCBridgeObjectKind
-class_kind (MonoClass *class)
+class_kind (MonoClass *klass)
 {
-	return bridge_callbacks.bridge_class_kind (class);
+	return bridge_callbacks.bridge_class_kind (klass);
 }
 
 static HashEntry*

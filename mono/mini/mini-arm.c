@@ -147,8 +147,6 @@ static int vfp_scratch2 = ARM_VFP_D1;
 
 static int i8_align;
 
-static volatile int ss_trigger_var = 0;
-
 static gpointer single_step_tramp, breakpoint_tramp;
 
 /*
@@ -680,6 +678,7 @@ mono_arm_have_fast_tls (void)
 gboolean
 mono_arm_have_tls_get (void)
 {
+	return FALSE;
 #ifdef HAVE_FAST_TLS
 	return TRUE;
 #else
@@ -919,7 +918,6 @@ mono_arch_init (void)
 
 	mono_mutex_init_recursive (&mini_arch_mutex);
 	if (mini_get_debug_options ()->soft_breakpoints) {
-		single_step_tramp = mini_get_single_step_trampoline ();
 		breakpoint_tramp = mini_get_breakpoint_trampoline ();
 	} else {
 		ss_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
@@ -1173,47 +1171,17 @@ mono_arch_regalloc_cost (MonoCompile *cfg, MonoMethodVar *vmv)
 
 #endif /* #ifndef DISABLE_JIT */
 
-#ifndef __GNUC_PREREQ
-#define __GNUC_PREREQ(maj, min) (0)
-#endif
-
 void
 mono_arch_flush_icache (guint8 *code, gint size)
 {
-#if defined(__native_client__)
+#if defined(MONO_CROSS_COMPILE) || defined(__native_client__)
   // For Native Client we don't have to flush i-cache here,
   // as it's being done by dyncode interface.
-#else
-
-#ifdef MONO_CROSS_COMPILE
 #elif __APPLE__
 	sys_icache_invalidate (code, size);
-#elif __GNUC_PREREQ(4, 3)
-    __builtin___clear_cache (code, code + size);
-#elif __GNUC_PREREQ(4, 1)
-	__clear_cache (code, code + size);
-#elif defined(PLATFORM_ANDROID)
-	const int syscall = 0xf0002;
-	__asm __volatile (
-		"mov	 r0, %0\n"			
-		"mov	 r1, %1\n"
-		"mov	 r7, %2\n"
-		"mov     r2, #0x0\n"
-		"svc     0x00000000\n"
-		:
-		:	"r" (code), "r" (code + size), "r" (syscall)
-		:	"r0", "r1", "r7", "r2"
-		);
 #else
-	__asm __volatile ("mov r0, %0\n"
-			"mov r1, %1\n"
-			"mov r2, %2\n"
-			"swi 0x9f0002       @ sys_cacheflush"
-			: /* no outputs */
-			: "r" (code), "r" (code + size), "r" (0)
-			: "r0", "r1", "r3" );
+    __builtin___clear_cache (code, code + size);
 #endif
-#endif /* !__native_client__ */
 }
 
 typedef enum {
@@ -1582,7 +1550,7 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 		}
 	}
 
-	DEBUG(printf("params: %d\n", sig->param_count));
+	DEBUG(g_print("params: %d\n", sig->param_count));
 	for (i = pstart; i < sig->param_count; ++i) {
 		ArgInfo *ainfo = &cinfo->args [n];
 
@@ -1594,9 +1562,9 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 			/* Emit the signature cookie just before the implicit arguments */
 			add_general (&gr, &stack_size, &cinfo->sig_cookie, TRUE);
 		}
-		DEBUG(printf("param %d: ", i));
+		DEBUG(g_print("param %d: ", i));
 		if (sig->params [i]->byref) {
-                        DEBUG(printf("byref\n"));
+                        DEBUG(g_print("byref\n"));
 			add_general (&gr, &stack_size, ainfo, TRUE);
 			n++;
 			continue;
@@ -1666,7 +1634,10 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 					ainfo->reg = fpr;
 					ainfo->nregs = nfields;
 					ainfo->esize = esize;
-					fpr += nfields;
+					if (esize == 4)
+						fpr += nfields;
+					else
+						fpr += nfields * 2;
 					break;
 				} else {
 					fpr = ARM_VFP_F16;
@@ -1683,7 +1654,7 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 				else
 					size = mini_type_stack_size_full (t, &align, FALSE);
 			}
-			DEBUG(printf ("load %d bytes struct\n", size));
+			DEBUG(g_print ("load %d bytes struct\n", size));
 			align_size = size;
 			nwords = 0;
 			align_size += (sizeof (gpointer) - 1);
@@ -1771,7 +1742,7 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 	}
 
 	/* align stack size to 8 */
-	DEBUG (printf ("      stack size: %d (%d)\n", (stack_size + 15) & ~15, stack_size));
+	DEBUG (g_print ("      stack size: %d (%d)\n", (stack_size + 15) & ~15, stack_size));
 	stack_size = (stack_size + 7) & ~7;
 
 	cinfo->stack_usage = stack_size;
@@ -1994,7 +1965,7 @@ mono_arch_allocate_vars (MonoCompile *cfg)
 		ins->opcode = OP_REGOFFSET;
 		ins->inst_basereg = cfg->frame_reg;
 		if (G_UNLIKELY (cfg->verbose_level > 1)) {
-			printf ("vret_addr =");
+			g_print ("vret_addr =");
 			mono_print_ins (cfg->vret_addr);
 		}
 		offset += sizeof(gpointer);
@@ -2029,19 +2000,8 @@ mono_arch_allocate_vars (MonoCompile *cfg)
 		offset += size;
 	}
 
-	if (cfg->arch.seq_point_read_var) {
+	if (cfg->arch.seq_point_ss_method_var) {
 		MonoInst *ins;
-
-		ins = cfg->arch.seq_point_read_var;
-
-		size = 4;
-		align = 4;
-		offset += align - 1;
-		offset &= ~(align - 1);
-		ins->opcode = OP_REGOFFSET;
-		ins->inst_basereg = cfg->frame_reg;
-		ins->inst_offset = offset;
-		offset += size;
 
 		ins = cfg->arch.seq_point_ss_method_var;
 		size = 4;
@@ -2157,7 +2117,7 @@ mono_arch_allocate_vars (MonoCompile *cfg)
 			/* These arguments are saved to the stack in the prolog */
 			ins->inst_offset = offset;
 			if (cfg->verbose_level >= 2)
-				printf ("arg %d allocated to %s+0x%0x.\n", i, mono_arch_regname (ins->inst_basereg), (int)ins->inst_offset);
+				g_print ("arg %d allocated to %s+0x%0x.\n", i, mono_arch_regname (ins->inst_basereg), (int)ins->inst_offset);
 			// FIXME:
 			offset += 32;
 			break;
@@ -2226,16 +2186,14 @@ mono_arch_create_vars (MonoCompile *cfg)
 	if (cinfo->ret.storage == RegTypeStructByAddr) {
 		cfg->vret_addr = mono_compile_create_var (cfg, &mono_defaults.int_class->byval_arg, OP_ARG);
 		if (G_UNLIKELY (cfg->verbose_level > 1)) {
-			printf ("vret_addr = ");
+			g_print ("vret_addr = ");
 			mono_print_ins (cfg->vret_addr);
 		}
 	}
 
 	if (cfg->gen_sdb_seq_points) {
 		if (cfg->soft_breakpoints) {
-			MonoInst *ins = mono_compile_create_var (cfg, &mono_defaults.int_class->byval_arg, OP_LOCAL);
-			ins->flags |= MONO_INST_VOLATILE;
-			cfg->arch.seq_point_read_var = ins;
+			MonoInst *ins;
 
 			ins = mono_compile_create_var (cfg, &mono_defaults.int_class->byval_arg, OP_LOCAL);
 			ins->flags |= MONO_INST_VOLATILE;
@@ -2335,7 +2293,7 @@ mono_arch_get_llvm_call_info (MonoCompile *cfg, MonoMethodSignature *sig)
 		case RegTypeIRegPair:
 		case RegTypeBase:
 		case RegTypeBaseGen:
-			linfo->args [i].storage = LLVMArgInIReg;
+			linfo->args [i].storage = LLVMArgNormal;
 			break;
 		case RegTypeStructByVal:
 			linfo->args [i].storage = LLVMArgAsIArgs;
@@ -2671,7 +2629,7 @@ mono_arch_emit_outarg_vt (MonoCompile *cfg, MonoInst *ins, MonoInst *src)
 
 				call->float_args = g_slist_append_mempool (cfg->mempool, call->float_args, fad);
 			} else {
-				add_outarg_reg (cfg, call, RegTypeFP, ainfo->reg + i, load);
+				add_outarg_reg (cfg, call, RegTypeFP, ainfo->reg + (i * 2), load);
 			}
 		}
 		break;
@@ -3309,7 +3267,7 @@ mono_arch_peephole_pass_2 (MonoCompile *cfg, MonoBasicBlock *bb)
 					MONO_DELETE_INS (bb, ins);
 					continue;
 				} else {
-					//static int c = 0; printf ("MATCHX %s %d\n", cfg->method->name,c++);
+					//static int c = 0; g_print ("MATCHX %s %d\n", cfg->method->name,c++);
 					ins->opcode = OP_MOVE;
 					ins->sreg1 = last_ins->sreg1;
 				}
@@ -3350,7 +3308,7 @@ mono_arch_peephole_pass_2 (MonoCompile *cfg, MonoBasicBlock *bb)
 						|| last_ins->opcode == OP_STORE_MEMBASE_IMM) &&
 				   ins->inst_basereg == last_ins->inst_destbasereg &&
 				   ins->inst_offset == last_ins->inst_offset) {
-				//static int c = 0; printf ("MATCHX %s %d\n", cfg->method->name,c++);
+				//static int c = 0; g_print ("MATCHX %s %d\n", cfg->method->name,c++);
 				ins->opcode = OP_ICONST;
 				ins->inst_c0 = last_ins->inst_imm;
 				g_assert_not_reached (); // check this rule
@@ -3913,7 +3871,7 @@ handle_thunk (MonoCompile *cfg, MonoDomain *domain, guchar *code, const guchar *
 			}
 		}
 
-		//printf ("THUNK: %p %p %p\n", code, target, target_thunk);
+		//g_print ("THUNK: %p %p %p\n", code, target, target_thunk);
 
 		if (!target_thunk) {
 			mono_mini_arch_unlock ();
@@ -4644,7 +4602,6 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			int i;
 			MonoInst *info_var = cfg->arch.seq_point_info_var;
 			MonoInst *ss_trigger_page_var = cfg->arch.ss_trigger_page_var;
-			MonoInst *ss_read_var = cfg->arch.seq_point_read_var;
 			MonoInst *ss_method_var = cfg->arch.seq_point_ss_method_var;
 			MonoInst *bp_method_var = cfg->arch.seq_point_bp_method_var;
 			MonoInst *var;
@@ -4665,7 +4622,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 				g_assert (arm_is_imm12 (info_var->inst_offset));
 			}
 
-			if (!cfg->soft_breakpoints) {
+			if (!cfg->soft_breakpoints && !cfg->compile_aot) {
 				/*
 				 * Read from the single stepping trigger page. This will cause a
 				 * SIGSEGV when single stepping is enabled.
@@ -4677,8 +4634,8 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 
 			if (ins->flags & MONO_INST_SINGLE_STEP_LOC) {
 				if (cfg->soft_breakpoints) {
-					/* Load the address of the sequence point trigger variable. */
-					var = ss_read_var;
+					/* Load the address of the sequence point method variable. */
+					var = ss_method_var;
 					g_assert (var);
 					g_assert (var->opcode == OP_REGOFFSET);
 					g_assert (arm_is_imm12 (var->inst_offset));
@@ -4687,14 +4644,6 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 					/* Read the value and check whether it is non-zero. */
 					ARM_LDR_IMM (code, dreg, dreg, 0);
 					ARM_CMP_REG_IMM (code, dreg, 0, 0);
-
-					/* Load the address of the sequence point method. */
-					var = ss_method_var;
-					g_assert (var);
-					g_assert (var->opcode == OP_REGOFFSET);
-					g_assert (arm_is_imm12 (var->inst_offset));
-					ARM_LDR_IMM (code, dreg, var->inst_basereg, var->inst_offset);
-
 					/* Call it conditionally. */
 					ARM_BLX_REG_COND (code, ARMCOND_NE, dreg);
 				} else {
@@ -5989,9 +5938,10 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			bb->spill_slot_defs = g_slist_prepend_mempool (cfg->mempool, bb->spill_slot_defs, ins);
 			break;
 		case OP_GC_SAFE_POINT: {
-#if defined (USE_COOP_GC)
 			const char *polling_func = NULL;
 			guint8 *buf [1];
+
+			g_assert (mono_threads_is_coop_enabled ());
 
 			polling_func = "mono_threads_state_poll";
 			ARM_LDR_IMM (code, ARMREG_IP, ins->sreg1, 0);
@@ -6001,7 +5951,6 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			mono_add_patch_info (cfg, code - cfg->native_code, MONO_PATCH_INFO_INTERNAL_METHOD, polling_func);
 			code = emit_call_seq (cfg, code);
 			arm_patch (buf [0], code);
-#endif
 			break;
 		}
 
@@ -6615,15 +6564,12 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 		}
 	}
 
-	if (cfg->arch.seq_point_read_var) {
-		MonoInst *read_ins = cfg->arch.seq_point_read_var;
+	if (cfg->arch.seq_point_ss_method_var) {
 		MonoInst *ss_method_ins = cfg->arch.seq_point_ss_method_var;
 		MonoInst *bp_method_ins = cfg->arch.seq_point_bp_method_var;
 #ifdef USE_JUMP_TABLES
 		gpointer *jte;
 #endif
-		g_assert (read_ins->opcode == OP_REGOFFSET);
-		g_assert (arm_is_imm12 (read_ins->inst_offset));
 		g_assert (ss_method_ins->opcode == OP_REGOFFSET);
 		g_assert (arm_is_imm12 (ss_method_ins->inst_offset));
 		g_assert (bp_method_ins->opcode == OP_REGOFFSET);
@@ -6631,26 +6577,21 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 
 #ifdef USE_JUMP_TABLES
 		jte = mono_jumptable_add_entries (3);
-		jte [0] = (gpointer)&ss_trigger_var;
-		jte [1] = single_step_tramp;
-		jte [2] = breakpoint_tramp;
+		jte [0] = &single_step_tramp;
+		jte [1] = breakpoint_tramp;
 		code = mono_arm_load_jumptable_entry_addr (code, jte, ARMREG_LR);
 #else
 		ARM_MOV_REG_REG (code, ARMREG_LR, ARMREG_PC);
 		ARM_B (code, 2);
-		*(volatile int **)code = &ss_trigger_var;
-		code += 4;
-		*(gpointer*)code = single_step_tramp;
+		*(gpointer*)code = &single_step_tramp;
 		code += 4;
 		*(gpointer*)code = breakpoint_tramp;
 		code += 4;
 #endif
 
 		ARM_LDR_IMM (code, ARMREG_IP, ARMREG_LR, 0);
-		ARM_STR_IMM (code, ARMREG_IP, read_ins->inst_basereg, read_ins->inst_offset);
-		ARM_LDR_IMM (code, ARMREG_IP, ARMREG_LR, 4);
 		ARM_STR_IMM (code, ARMREG_IP, ss_method_ins->inst_basereg, ss_method_ins->inst_offset);
-		ARM_LDR_IMM (code, ARMREG_IP, ARMREG_LR, 8);
+		ARM_LDR_IMM (code, ARMREG_IP, ARMREG_LR, 4);
 		ARM_STR_IMM (code, ARMREG_IP, bp_method_ins->inst_basereg, bp_method_ins->inst_offset);
 	}
 
@@ -7521,7 +7462,7 @@ mono_arch_start_single_stepping (void)
 	if (ss_trigger_page)
 		mono_mprotect (ss_trigger_page, mono_pagesize (), 0);
 	else
-		ss_trigger_var = 1;
+		single_step_tramp = mini_get_single_step_trampoline ();
 }
 	
 /*
@@ -7535,7 +7476,7 @@ mono_arch_stop_single_stepping (void)
 	if (ss_trigger_page)
 		mono_mprotect (ss_trigger_page, mono_pagesize (), MONO_MMAP_READ);
 	else
-		ss_trigger_var = 0;
+		single_step_tramp = NULL;
 }
 
 #if __APPLE__

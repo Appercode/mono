@@ -10,7 +10,7 @@
 
 #include "config.h"
 #include "mini-gc.h"
-#include <mono/metadata/gc-internal.h>
+#include <mono/metadata/gc-internals.h>
 
 static gboolean
 get_provenance (StackFrameInfo *frame, MonoContext *ctx, gpointer data)
@@ -38,7 +38,7 @@ get_provenance_func (void)
 //#if defined(MONO_ARCH_GC_MAPS_SUPPORTED)
 
 #include <mono/metadata/sgen-conf.h>
-#include <mono/metadata/gc-internal.h>
+#include <mono/metadata/gc-internals.h>
 #include <mono/utils/mono-counters.h>
 
 #define SIZEOF_SLOT ((int)sizeof (mgreg_t))
@@ -597,7 +597,7 @@ thread_attach_func (void)
 	TlsData *tls;
 
 	tls = g_new0 (TlsData, 1);
-	tls->tid = GetCurrentThreadId ();
+	tls->tid = mono_native_thread_id_get ();
 	tls->info = mono_thread_info_current ();
 	stats.tlsdata_size += sizeof (TlsData);
 
@@ -622,7 +622,7 @@ thread_suspend_func (gpointer user_data, void *sigctx, MonoContext *ctx)
 		return;
 	}
 
-	if (tls->tid != GetCurrentThreadId ()) {
+	if (tls->tid != mono_native_thread_id_get ()) {
 		/* Happens on osx because threads are not suspended using signals */
 #ifndef TARGET_WIN32
 		gboolean res;

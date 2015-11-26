@@ -24,13 +24,75 @@
 #include <mono/metadata/mono-endian.h>
 #include <mono/metadata/metadata-internals.h>
 #include <mono/metadata/class-internals.h>
+#include <mono/metadata/cil-coff.h>
 
 #include "debug-mono-ppdb.h"
 
 struct _MonoPPDBFile {
 	MonoImage *image;
-	GHashTable *doc_cache;
+	GHashTable *doc_hash;
+	GHashTable *method_hash;
 };
+
+/* IMAGE_DEBUG_DIRECTORY structure */
+typedef struct
+{
+	gint32 characteristics;
+	gint32 time_date_stamp;
+	gint16 major_version;
+	gint16 minor_version;
+	gint32 type;
+	gint32 size_of_data;
+	gint32 address;
+	gint32 pointer;
+}  ImageDebugDirectory;
+
+typedef struct {
+	gint32 signature;
+	guint8 guid [16];
+	gint32 age;
+} CodeviewDebugDirectory;
+
+typedef struct {
+	guint8 guid [20];
+	guint32 entry_point;
+	guint64 referenced_tables;
+} PdbStreamHeader;
+
+static gboolean
+get_pe_debug_guid (MonoImage *image, guint8 *out_guid, gint32 *out_age, gint32 *out_timestamp)
+{
+	MonoPEDirEntry *debug_dir_entry;
+	ImageDebugDirectory *debug_dir;
+
+	debug_dir_entry = &((MonoCLIImageInfo*)image->image_info)->cli_header.datadir.pe_debug;
+	if (!debug_dir_entry->size)
+		return FALSE;
+
+	int offset = mono_cli_rva_image_map (image, debug_dir_entry->rva);
+	debug_dir = (ImageDebugDirectory*)(image->raw_data + offset);
+	if (debug_dir->type == 2 && debug_dir->major_version == 0x100 && debug_dir->minor_version == 0x504d) {
+		/* This is a 'CODEVIEW' debug directory */
+		CodeviewDebugDirectory *dir = (CodeviewDebugDirectory*)(image->raw_data + debug_dir->pointer);
+
+		if (dir->signature == 0x53445352) {
+			memcpy (out_guid, dir->guid, 16);
+			*out_age = dir->age;
+			*out_timestamp = debug_dir->time_date_stamp;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+static void
+doc_free (gpointer key)
+{
+	MonoDebugSourceInfo *info = key;
+
+	g_free (info->source_file);
+	g_free (info);
+}
 
 MonoPPDBFile*
 mono_ppdb_load_file (MonoImage *image, const guint8 *raw_contents, int size)
@@ -39,15 +101,13 @@ mono_ppdb_load_file (MonoImage *image, const guint8 *raw_contents, int size)
 	const char *filename;
 	char *s, *ppdb_filename;
 	MonoImageOpenStatus status;
-#if 0
-	MonoTableInfo *tables;
-	guint32 cols [MONO_MODULE_SIZE];
-	const char *guid, *ppdb_guid;
-#endif
+	guint8 pe_guid [16];
+	gint32 pe_age;
+	gint32 pe_timestamp;
 	MonoPPDBFile *ppdb;
 
 	if (raw_contents) {
-		ppdb_image = mono_image_open_from_data_internal ((char*)raw_contents, size, TRUE, NULL, FALSE, TRUE, NULL);
+		ppdb_image = mono_image_open_from_data_internal ((char*)raw_contents, size, TRUE, &status, FALSE, TRUE, NULL);
 	} else {
 		/* ppdb files drop the .exe/.dll extension */
 		filename = mono_image_get_filename (image);
@@ -61,33 +121,35 @@ mono_ppdb_load_file (MonoImage *image, const guint8 *raw_contents, int size)
 		}
 
 		ppdb_image = mono_image_open_metadata_only (ppdb_filename, &status);
+		if (!ppdb_image)
+			g_free (ppdb_filename);
 	}
 	if (!ppdb_image)
 		return NULL;
 
-#if 0
-	/* Check that the images match */
-	// FIXME: ppdb files no longer have a MODULE table */
-	tables = image->tables;
-	g_assert (tables [MONO_TABLE_MODULE].rows);
-	mono_metadata_decode_row (&tables [MONO_TABLE_MODULE], 0, cols, MONO_MODULE_SIZE);
-	guid = mono_metadata_guid_heap (image, cols [MONO_MODULE_MVID]);
+	/*
+	 * Check that the images match.
+	 * The same id is stored in the Debug Directory of the PE file, and in the
+	 * #Pdb stream in the ppdb file.
+	 */
+	if (get_pe_debug_guid (image, pe_guid, &pe_age, &pe_timestamp)) {
+		PdbStreamHeader *pdb_stream = (PdbStreamHeader*)ppdb_image->heap_pdb.data;
 
-	tables = ppdb_image->tables;
-	g_assert (tables [MONO_TABLE_MODULE].rows);
-	mono_metadata_decode_row (&tables [MONO_TABLE_MODULE], 0, cols, MONO_MODULE_SIZE);
-	ppdb_guid = mono_metadata_guid_heap (ppdb_image, cols [MONO_MODULE_MVID]);
+		g_assert (pdb_stream);
 
-	if (memcmp (guid, ppdb_guid, 16) != 0) {
-		g_warning ("Symbol file %s doesn't match image %s", ppdb_image->name,
-				   image->name);
-		mono_image_close (ppdb_image);
-		return NULL;
+		/* The pdb id is a concentation of the pe guid and the timestamp */
+		if (memcmp (pe_guid, pdb_stream->guid, 16) != 0 || memcmp (&pe_timestamp, pdb_stream->guid + 16, 4) != 0) {
+			g_warning ("Symbol file %s doesn't match image %s", ppdb_image->name,
+					   image->name);
+			mono_image_close (ppdb_image);
+			return NULL;
+		}
 	}
-#endif
 
 	ppdb = g_new0 (MonoPPDBFile, 1);
 	ppdb->image = ppdb_image;
+	ppdb->doc_hash = g_hash_table_new_full (NULL, NULL, NULL, (GDestroyNotify) doc_free);
+	ppdb->method_hash = g_hash_table_new_full (NULL, NULL, NULL, (GDestroyNotify) g_free);
 
 	return ppdb;
 }
@@ -98,8 +160,8 @@ mono_ppdb_close (MonoDebugHandle *handle)
 	MonoPPDBFile *ppdb = handle->ppdb;
 
 	mono_image_close (ppdb->image);
-	if (ppdb->doc_cache)
-		g_hash_table_destroy (ppdb->doc_cache);
+	g_hash_table_destroy (ppdb->doc_hash);
+	g_hash_table_destroy (ppdb->method_hash);
 	g_free (ppdb);
 }
 
@@ -107,18 +169,27 @@ MonoDebugMethodInfo *
 mono_ppdb_lookup_method (MonoDebugHandle *handle, MonoMethod *method)
 {
 	MonoDebugMethodInfo *minfo;
+	MonoPPDBFile *ppdb = handle->ppdb;
 
 	if (handle->image != mono_class_get_image (mono_method_get_class (method)))
 		return NULL;
 
-	// FIXME: Cache
+	mono_debugger_lock ();
 
-	// FIXME: Methods without tokens
+	minfo = g_hash_table_lookup (ppdb->method_hash, method);
+	if (minfo) {
+		mono_debugger_unlock ();
+		return minfo;
+	}
 
 	minfo = g_new0 (MonoDebugMethodInfo, 1);
 	minfo->index = 0;
 	minfo->method = method;
 	minfo->handle = handle;
+
+	g_hash_table_insert (ppdb->method_hash, method, minfo);
+
+	mono_debugger_unlock ();
 
 	return minfo;
 }
@@ -134,9 +205,13 @@ get_docinfo (MonoPPDBFile *ppdb, MonoImage *image, int docidx)
 	int size, part_size, partidx, nparts;
 	char sep;
 	GString *s;
-	MonoDebugSourceInfo *res;
+	MonoDebugSourceInfo *res, *cached;
 
-	// FIXME: Cache
+	mono_debugger_lock ();
+	cached = g_hash_table_lookup (ppdb->doc_hash, GUINT_TO_POINTER (docidx));
+	mono_debugger_unlock ();
+	if (cached)
+		return cached;
 
 	mono_metadata_decode_row (&tables [MONO_TABLE_DOCUMENT], docidx-1, cols, MONO_DOCUMENT_SIZE);
 
@@ -170,6 +245,15 @@ get_docinfo (MonoPPDBFile *ppdb, MonoImage *image, int docidx)
 	res->guid = NULL;
 	res->hash = (guint8*)mono_metadata_blob_heap (image, cols [MONO_DOCUMENT_HASH]);
 
+	mono_debugger_lock ();
+	cached = g_hash_table_lookup (ppdb->doc_hash, GUINT_TO_POINTER (docidx));
+	if (!cached) {
+		g_hash_table_insert (ppdb->doc_hash, GUINT_TO_POINTER (docidx), res);
+	} else {
+		doc_free (res);
+		res = cached;
+	}
+	mono_debugger_unlock ();
 	return res;
 }
 
@@ -213,9 +297,10 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 
 	mono_metadata_decode_row (&tables [MONO_TABLE_METHODBODY], idx-1, cols, MONO_METHODBODY_SIZE);
 
-	// FIXME:
-	g_assert (cols [MONO_METHODBODY_SEQ_POINTS]);
+	docidx = cols [MONO_METHODBODY_DOCUMENT];
 
+	if (!cols [MONO_METHODBODY_SEQ_POINTS])
+		return NULL;
 	ptr = mono_metadata_blob_heap (image, cols [MONO_METHODBODY_SEQ_POINTS]);
 	size = mono_metadata_decode_blob_size (ptr, &ptr);
 	end = ptr + size;
@@ -223,7 +308,8 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 	/* Header */
 	/* LocalSignature */
 	mono_metadata_decode_value (ptr, &ptr);
-	docidx = mono_metadata_decode_value (ptr, &ptr);
+	if (docidx == 0)
+		docidx = mono_metadata_decode_value (ptr, &ptr);
 	docname = get_docname (ppdb, image, docidx);
 
 	iloffset = 0;
@@ -232,9 +318,10 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 	while (ptr < end) {
 		delta_il = mono_metadata_decode_value (ptr, &ptr);
 		if (!first && delta_il == 0) {
-			/* Document record */
-			// FIXME:
-			g_assert_not_reached ();
+			/* document-record */
+			docidx = mono_metadata_decode_value (ptr, &ptr);
+			docname = get_docname (ppdb, image, docidx);
+			continue;
 		}
 		if (!first && iloffset + delta_il > offset)
 			break;
@@ -247,8 +334,8 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 		else
 			delta_cols = mono_metadata_decode_signed_value (ptr, &ptr);
 		if (delta_lines == 0 && delta_cols == 0)
-			// FIXME:
-			g_assert_not_reached ();
+			/* hidden-sequence-point-record */
+			continue;
 		if (first_non_hidden) {
 			start_line = mono_metadata_decode_value (ptr, &ptr);
 			start_col = mono_metadata_decode_value (ptr, &ptr);
@@ -258,7 +345,7 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 			start_line += adv_line;
 			start_col += adv_col;
 		}
-		first_non_hidden = TRUE;
+		first_non_hidden = FALSE;
 	}
 
 	location = g_new0 (MonoDebugSourceLocation, 1);
@@ -310,6 +397,8 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 
 	mono_metadata_decode_row (&tables [MONO_TABLE_METHODBODY], method_idx-1, cols, MONO_METHODBODY_SIZE);
 
+	docidx = cols [MONO_METHODBODY_DOCUMENT];
+
 	if (!cols [MONO_METHODBODY_SEQ_POINTS])
 		return;
 
@@ -322,8 +411,10 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 	/* Header */
 	/* LocalSignature */
 	mono_metadata_decode_value (ptr, &ptr);
-	docidx = mono_metadata_decode_value (ptr, &ptr);
+	if (docidx == 0)
+		docidx = mono_metadata_decode_value (ptr, &ptr);
 	docinfo = get_docinfo (ppdb, image, docidx);
+
 	if (sfiles)
 		g_ptr_array_add (sfiles, docinfo);
 
@@ -363,7 +454,7 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 			start_line += adv_line;
 			start_col += adv_col;
 		}
-		first_non_hidden = TRUE;
+		first_non_hidden = FALSE;
 
 		memset (&sp, 0, sizeof (sp));
 		sp.il_offset = iloffset;

@@ -39,7 +39,7 @@
 #include <mono/metadata/marshal.h>
 #include <mono/metadata/lock-tracer.h>
 #include <mono/metadata/verify-internals.h>
-#include <mono/utils/mono-logger-internal.h>
+#include <mono/utils/mono-logger-internals.h>
 #include <mono/utils/mono-dl.h>
 #include <mono/utils/mono-membar.h>
 #include <mono/utils/mono-counters.h>
@@ -1196,12 +1196,9 @@ method_from_methodspec (MonoImage *image, MonoGenericContext *context, guint32 i
 	ptr++;
 	param_count = mono_metadata_decode_value (ptr, &ptr);
 
-	inst = mono_metadata_parse_generic_inst (image, NULL, param_count, ptr, &ptr);
-	if (!inst) {
-		mono_loader_assert_no_error ();
-		mono_error_set_bad_image (error, image, "Cannot parse generic instance for methodspec 0x%08x", idx);
+	inst = mono_metadata_parse_generic_inst (image, NULL, param_count, ptr, &ptr, error);
+	if (!inst)
 		return NULL;
-	}
 
 	if (context && inst->is_open) {
 		inst = mono_metadata_inflate_generic_inst (inst, context, error);
