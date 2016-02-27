@@ -369,6 +369,14 @@ namespace System.Windows {
             return (UIElement)this;
         }
 
+        /// <summary>
+        /// Determines if a value is set for a given <see cref="DependencyProperty" />.
+        /// </summary>
+        internal virtual bool ContainsValue(DependencyProperty dp)
+        {
+            return properties.ContainsKey(dp);
+        }
+
         protected void NotifyPropertyChange(DependencyProperty dp, object newValue, object oldValue)
         {
             var args = new DependencyPropertyChangedEventArgs(dp, oldValue, newValue);
