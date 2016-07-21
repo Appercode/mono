@@ -379,9 +379,13 @@ namespace Mono.Tools.LocaleBuilder
 					throw new NotImplementedException ();
 				}
 
-				var territories = entry.Attributes["territories"].Value.Split ();
+				var territories = entry.Attributes["territories"].Value.Split (new [] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
 				foreach (var t in territories) {
-					territory2dayofweek.Add (t, dow);
+					var tr = t.Trim ();
+					if (tr.Length == 0)
+						continue;
+
+					territory2dayofweek.Add (tr, dow);
 				}
 			}
 
@@ -617,27 +621,6 @@ namespace Mono.Tools.LocaleBuilder
 						}
 
 						break;
-					}
-				}
-
-				if (nfe.CurrencyDecimalDigits == null) {
-					var all_digits = new List<string> ();
-					GetAllChildrenValues (ci, all_digits, l => l.NumberFormatEntry.CurrencyDecimalDigits);
-					var children = all_digits.Where (l => l != null).Distinct ().ToList ();
-
-					if (children.Count == 1) {
-						nfe.CurrencyDecimalDigits = children[0];
-					} else if (children.Count == 0) {
-						if (!ci.HasMissingLocale)
-							Console.WriteLine ("No currency decimal digits data for `{0}'", ci.Name);
-
-						nfe.CurrencyDecimalDigits = "2";
-					} else if (ci.IsNeutral) {
-						nfe.CurrencyDecimalDigits = "2";
-					} else {
-						// .NET has weird concept of territory data available for neutral cultures (e.g. en, es, pt)
-						// We have to manually disambiguate the correct entry (which is artofficial anyway)
-						throw new ApplicationException (string.Format ("Ambiguous currency decimal digits data for `{0}'", ci.Name));
 					}
 				}
 			}
@@ -1127,13 +1110,16 @@ namespace Mono.Tools.LocaleBuilder
 				if (el != null) {
 					// CLDR uses unicode negative sign for some culture (e.g sv, is, lt, don't kwnow why) but .net always
 					// uses simple - sign
-					if (el.InnerText == "\u2212") {
+					switch (el.InnerText) {
+					case "\u2212":
+					case "\u200F\u002D": // Remove any right-to-left mark characters
+					case "\u200E\u002D":
 						ni.NegativeSign = "-";
-					} else if (el.InnerText ==  "\u200F\u002D") {
-						// Remove any right-to-left mark characters
-						ni.NegativeSign = "-";
-					} else
-						ni.NegativeSign = el.InnerText;					
+						break;
+					default:
+						ni.NegativeSign = el.InnerText;
+						break;
+					}
 				}
 
 				el = node.SelectSingleNode ("infinity");
@@ -1160,30 +1146,6 @@ namespace Mono.Tools.LocaleBuilder
 				if (el != null)
 					ni.PercentSymbol = el.InnerText;
 
-			}
-
-			string value = null;
-
-			// .net has incorrect separators for some countries and we want to be compatible
-			switch (ci.Name) {
-			case "es-ES":
-			case "es":
-				// es-ES does not have group separator but .net has '.'
-				value = ".";
-				break;
-			default:
-				if (node != null) {
-					el = node.SelectSingleNode ("group");
-					if (el != null) {
-						value = el.InnerText;
-					}
-				}
-
-				break;
-			}
-					
-			if (value != null) {
-				ni.NumberGroupSeparator = ni.CurrencyGroupSeparator = value;
 			}
 		}
 

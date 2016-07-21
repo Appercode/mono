@@ -41,15 +41,11 @@ using System.IO;
 using System.Globalization;
 
 namespace System.Net.NetworkInformation {
-	public abstract class NetworkInterface {
+	static class SystemNetworkInterface {
 
 		static readonly NetworkInterfaceFactory nif = NetworkInterfaceFactory.Create ();
 
-		protected NetworkInterface ()
-		{
-		}
-
-		public static NetworkInterface [] GetAllNetworkInterfaces ()
+		public static NetworkInterface [] GetNetworkInterfaces ()
 		{
 			try {
 				return nif.GetAllNetworkInterfaces ();
@@ -58,15 +54,21 @@ namespace System.Net.NetworkInformation {
 			}
 		}
 
-		[MonoTODO("Always returns true")]
-		public static bool GetIsNetworkAvailable ()
+		public static bool InternalGetIsNetworkAvailable ()
 		{
+			// TODO:
 			return true;
 		}
-		
-		public static int LoopbackInterfaceIndex {
+
+		public static int InternalLoopbackInterfaceIndex {
 			get {
 				return nif.GetLoopbackInterfaceIndex ();
+			}
+		}
+
+		public static int InternalIPv6LoopbackInterfaceIndex {
+			get {
+				throw new NotImplementedException ();
 			}
 		}
 
@@ -74,20 +76,6 @@ namespace System.Net.NetworkInformation {
 		{
 			return nif.GetNetMask (address);
 		}
-
-		public abstract IPInterfaceProperties GetIPProperties ();
-		public abstract IPv4InterfaceStatistics GetIPv4Statistics ();
-		public abstract PhysicalAddress GetPhysicalAddress ();
-		public abstract bool Supports (NetworkInterfaceComponent networkInterfaceComponent);
-
-		public abstract string Description { get; }
-		public abstract string Id { get; }
-		public abstract bool IsReceiveOnly { get; }
-		public abstract string Name { get; }
-		public abstract NetworkInterfaceType NetworkInterfaceType { get; }
-		public abstract OperationalStatus OperationalStatus { get; }
-		public abstract long Speed { get; }
-		public abstract bool SupportsMulticast { get; }
 	}
 
 	abstract class NetworkInterfaceFactory
@@ -250,6 +238,10 @@ namespace System.Net.NetworkInformation {
 
 		class LinuxNetworkInterfaceAPI : UnixNetworkInterfaceAPI
 		{
+			const int AF_INET = 2;
+			const int AF_INET6 = 10;
+			const int AF_PACKET = 17;
+
 			static void FreeInterfaceAddresses (IntPtr ifap)
 			{
 #if MONODROID
@@ -270,9 +262,6 @@ namespace System.Net.NetworkInformation {
 
 			public override NetworkInterface [] GetAllNetworkInterfaces ()
 			{
-				const int AF_INET   = 2;
-				const int AF_INET6  = 10;
-				const int AF_PACKET = 17;
 
 				var interfaces = new Dictionary <string, LinuxNetworkInterface> ();
 				IntPtr ifap;
@@ -406,7 +395,43 @@ namespace System.Net.NetworkInformation {
 
 			public override IPAddress GetNetMask (IPAddress address)
 			{
-				throw new NotImplementedException ();
+				foreach (ifaddrs networkInteface in GetNetworkInterfaces()) {
+					if (networkInteface.ifa_addr == IntPtr.Zero)
+						continue;
+
+					var sockaddr = (sockaddr_in)Marshal.PtrToStructure(networkInteface.ifa_addr, typeof(sockaddr_in));
+
+					if (sockaddr.sin_family != AF_INET)
+						continue;
+
+					if (!address.Equals(new IPAddress(sockaddr.sin_addr)))
+						continue;
+
+					var netmask = (sockaddr_in)Marshal.PtrToStructure(networkInteface.ifa_netmask, typeof(sockaddr_in));
+					return new IPAddress(netmask.sin_addr);
+				}
+
+				return null;
+			}
+
+			private static IEnumerable<ifaddrs> GetNetworkInterfaces()
+			{
+				IntPtr ifap = IntPtr.Zero;
+
+				try {
+					if (GetInterfaceAddresses(out ifap) != 0)
+						yield break;
+
+					var next = ifap;
+					while (next != IntPtr.Zero) {
+						var addr = (ifaddrs)Marshal.PtrToStructure(next, typeof(ifaddrs));
+						yield return addr;
+						next = addr.ifa_next;
+					}
+				} finally {
+					if (ifap != IntPtr.Zero)
+						FreeInterfaceAddresses(ifap);
+				}
 			}
 		}
 
@@ -479,7 +504,7 @@ namespace System.Net.NetworkInformation {
 				return new LinuxNetworkInterfaceAPI ();
 			}
 
-#if !MONODROID
+#if !MOBILE
 			if (Environment.OSVersion.Version >= windowsVer51)
 				return new Win32NetworkInterfaceAPI ();
 #endif

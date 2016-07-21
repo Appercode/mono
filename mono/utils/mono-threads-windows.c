@@ -31,7 +31,6 @@ mono_threads_core_begin_async_suspend (MonoThreadInfo *info, gboolean interrupt_
 	DWORD id = mono_thread_info_get_tid (info);
 	HANDLE handle;
 	DWORD result;
-	gboolean res;
 
 	handle = OpenThread (THREAD_ALL_ACCESS, FALSE, id);
 	g_assert (handle);
@@ -53,27 +52,24 @@ mono_threads_core_begin_async_suspend (MonoThreadInfo *info, gboolean interrupt_
 		//XXX interrupt_kernel doesn't make sense in this case as the target is not in a syscall
 		return TRUE;
 	}
-	res = mono_threads_get_runtime_callbacks ()->thread_state_init_from_handle (&info->thread_saved_state [ASYNC_SUSPEND_STATE_INDEX], info);
+	info->suspend_can_continue = mono_threads_get_runtime_callbacks ()->thread_state_init_from_handle (&info->thread_saved_state [ASYNC_SUSPEND_STATE_INDEX], info);
 	THREADS_SUSPEND_DEBUG ("thread state %p -> %d\n", (void*)id, res);
-	if (res) {
+	if (info->suspend_can_continue) {
 		//FIXME do we need to QueueUserAPC on this case?
 		if (interrupt_kernel)
 			QueueUserAPC ((PAPCFUNC)interrupt_apc, handle, (ULONG_PTR)NULL);
 	} else {
-		mono_threads_transition_async_suspend_compensation (info);
-		result = ResumeThread (handle);
-		g_assert (result == 1);
 		THREADS_SUSPEND_DEBUG ("FAILSAFE RESUME/2 %p -> %d\n", (void*)info->native_handle, 0);
 	}
 
 	CloseHandle (handle);
-	return res;
+	return info->suspend_can_continue;
 }
 
 gboolean
 mono_threads_core_check_suspend_result (MonoThreadInfo *info)
 {
-	return TRUE;
+	return info->suspend_can_continue;
 }
 
 gboolean
@@ -139,7 +135,7 @@ mono_threads_platform_free (MonoThreadInfo *info)
 typedef struct {
 	LPTHREAD_START_ROUTINE start_routine;
 	void *arg;
-	MonoSemType registered;
+	MonoCoopSem registered;
 	gboolean suspend;
 	HANDLE suspend_event;
 } ThreadStartInfo;
@@ -160,7 +156,7 @@ inner_start_thread (LPVOID arg)
 	info->runtime_thread = TRUE;
 	info->create_suspended = suspend;
 
-	post_result = MONO_SEM_POST (&(start_info->registered));
+	post_result = mono_coop_sem_post (&(start_info->registered));
 	g_assert (!post_result);
 
 	if (suspend) {
@@ -176,16 +172,18 @@ inner_start_thread (LPVOID arg)
 }
 
 HANDLE
-mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer arg, guint32 stack_size, guint32 creation_flags, MonoNativeThreadId *out_tid)
+mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer arg, MonoThreadParm *tp, MonoNativeThreadId *out_tid)
 {
 	ThreadStartInfo *start_info;
 	HANDLE result;
 	DWORD thread_id;
+	guint32 creation_flags = tp->creation_flags;
+	int res;
 
 	start_info = g_malloc0 (sizeof (ThreadStartInfo));
 	if (!start_info)
 		return NULL;
-	MONO_SEM_INIT (&(start_info->registered), 0);
+	mono_coop_sem_init (&(start_info->registered), 0);
 	start_info->arg = arg;
 	start_info->start_routine = start_routine;
 	start_info->suspend = creation_flags & CREATE_SUSPENDED;
@@ -196,11 +194,11 @@ mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer 
 			return NULL;
 	}
 
-	result = CreateThread (NULL, stack_size, inner_start_thread, start_info, creation_flags, &thread_id);
+	result = CreateThread (NULL, tp->stack_size, inner_start_thread, start_info, creation_flags, &thread_id);
 	if (result) {
-		while (MONO_SEM_WAIT (&(start_info->registered)) != 0) {
-			/*if (EINTR != errno) ABORT("sem_wait failed"); */
-		}
+		res = mono_coop_sem_wait (&(start_info->registered), MONO_SEM_FLAGS_NONE);
+		g_assert (res != -1);
+
 		if (start_info->suspend) {
 			g_assert (SuspendThread (result) != (DWORD)-1);
 			SetEvent (start_info->suspend_event);
@@ -210,7 +208,7 @@ mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer 
 	}
 	if (out_tid)
 		*out_tid = thread_id;
-	MONO_SEM_DESTROY (&(start_info->registered));
+	mono_coop_sem_destroy (&(start_info->registered));
 	g_free (start_info);
 	return result;
 }
@@ -347,7 +345,7 @@ typedef struct tagTHREADNAME_INFO
 #endif
 
 void
-mono_threads_core_set_name (MonoNativeThreadId tid, const char *name)
+mono_native_thread_set_name (MonoNativeThreadId tid, const char *name)
 {
 #if defined(_MSC_VER)
 	/* http://msdn.microsoft.com/en-us/library/xcb2z8hs.aspx */

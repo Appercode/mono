@@ -1291,10 +1291,6 @@ namespace Mono.CSharp {
 						// Special case hoisted return value (happens in try/finally scenario)
 						//
 						if (ec.TryFinallyUnwind != null) {
-							if (storey.HoistedReturnValue is VariableReference) {
-								storey.HoistedReturnValue = ec.GetTemporaryField (storey.HoistedReturnValue.Type);
-							}
-
 							exit_label = TryFinally.EmitRedirectedReturn (ec, async_body);
 						}
 
@@ -3119,6 +3115,7 @@ namespace Mono.CSharp {
 	public class ExplicitBlock : Block
 	{
 		protected AnonymousMethodStorey am_storey;
+		int debug_scope_index;
 
 		public ExplicitBlock (Block parent, Location start, Location end)
 			: this (parent, (Flags) 0, start, end)
@@ -3226,8 +3223,10 @@ namespace Mono.CSharp {
 
 		public override void Emit (EmitContext ec)
 		{
-			if (Parent != null)
-				ec.BeginScope ();
+			if (Parent != null) {
+				// TODO: It's needed only when scope has variable (normal or lifted)
+				ec.BeginScope (GetDebugSymbolScopeIndex ());
+			}
 
 			EmitScopeInitialization (ec);
 
@@ -3427,6 +3426,14 @@ namespace Mono.CSharp {
 			storey.Define ();
 			storey.PrepareEmit ();
 			storey.Parent.PartialContainer.AddCompilerGeneratedClass (storey);
+		}
+
+		public int GetDebugSymbolScopeIndex ()
+		{
+			if (debug_scope_index == 0)
+				debug_scope_index = ++ParametersBlock.debug_scope_index;
+
+			return debug_scope_index;
 		}
 
 		public void RegisterAsyncAwait ()
@@ -5870,7 +5877,7 @@ namespace Mono.CSharp {
 		protected override bool DoFlowAnalysis (FlowAnalysisContext fc)
 		{
 			var res = stmt.FlowAnalysis (fc);
-			parent = null;
+			parent_try_block = null;
 			return res;
 		}
 
@@ -5890,14 +5897,18 @@ namespace Mono.CSharp {
 		{
 			bool ok;
 
-			parent = bc.CurrentTryBlock;
+			parent_try_block = bc.CurrentTryBlock;
 			bc.CurrentTryBlock = this;
 
-			using (bc.Set (ResolveContext.Options.TryScope)) {
+			if (stmt is TryCatch) {
 				ok = stmt.Resolve (bc);
+			} else {
+				using (bc.Set (ResolveContext.Options.TryScope)) {
+					ok = stmt.Resolve (bc);
+				}
 			}
 
-			bc.CurrentTryBlock = parent;
+			bc.CurrentTryBlock = parent_try_block;
 
 			//
 			// Finally block inside iterator is called from MoveNext and
@@ -5923,16 +5934,12 @@ namespace Mono.CSharp {
 	{
 		protected List<ResumableStatement> resume_points;
 		protected int first_resume_pc;
-		protected ExceptionStatement parent;
+		protected ExceptionStatement parent_try_block;
+		protected int first_catch_resume_pc = -1;
 
 		protected ExceptionStatement (Location loc)
 		{
 			this.loc = loc;
-		}
-
-		protected virtual void EmitBeginException (EmitContext ec)
-		{
-			ec.BeginExceptionBlock ();
 		}
 
 		protected virtual void EmitTryBodyPrepare (EmitContext ec)
@@ -5945,10 +5952,37 @@ namespace Mono.CSharp {
 				ec.Emit (OpCodes.Stloc, state_machine.CurrentPC);
 			}
 
-			EmitBeginException (ec);
+			//
+			// The resume points in catch section when this is try-catch-finally
+			//
+			if (IsRewrittenTryCatchFinally ()) {
+				ec.BeginExceptionBlock ();
 
-			if (resume_points != null) {
-				ec.MarkLabel (resume_point);
+				if (first_catch_resume_pc >= 0) {
+
+					ec.MarkLabel (resume_point);
+
+					// For normal control flow, we want to fall-through the Switch
+					// So, we use CurrentPC rather than the $PC field, and initialize it to an outside value above
+					ec.Emit (OpCodes.Ldloc, state_machine.CurrentPC);
+					ec.EmitInt (first_resume_pc + first_catch_resume_pc);
+					ec.Emit (OpCodes.Sub);
+
+					var labels = new Label [resume_points.Count - first_catch_resume_pc];
+					for (int i = 0; i < labels.Length; ++i)
+						labels [i] = resume_points [i + first_catch_resume_pc].PrepareForEmit (ec);
+					ec.Emit (OpCodes.Switch, labels);
+				}
+			}
+
+			ec.BeginExceptionBlock ();
+
+			//
+			// The resume points for try section
+			//
+			if (resume_points != null && first_catch_resume_pc != 0) {
+				if (first_catch_resume_pc < 0)
+					ec.MarkLabel (resume_point);
 
 				// For normal control flow, we want to fall-through the Switch
 				// So, we use CurrentPC rather than the $PC field, and initialize it to an outside value above
@@ -5956,21 +5990,30 @@ namespace Mono.CSharp {
 				ec.EmitInt (first_resume_pc);
 				ec.Emit (OpCodes.Sub);
 
-				Label[] labels = new Label[resume_points.Count];
-				for (int i = 0; i < resume_points.Count; ++i)
+				var labels = new Label[resume_points.Count - System.Math.Max (first_catch_resume_pc, 0)];
+				for (int i = 0; i < labels.Length; ++i)
 					labels[i] = resume_points[i].PrepareForEmit (ec);
 				ec.Emit (OpCodes.Switch, labels);
 			}
 		}
 
-		public virtual int AddResumePoint (ResumableStatement stmt, int pc, StateMachineInitializer stateMachine)
+		bool IsRewrittenTryCatchFinally ()
 		{
-			if (parent != null) {
-				// TODO: MOVE to virtual TryCatch
-				var tc = this as TryCatch;
-				var s = tc != null && tc.IsTryCatchFinally ? stmt : this;
+			var tf = this as TryFinally;
+			if (tf == null)
+				return false;
 
-				pc = parent.AddResumePoint (s, pc, stateMachine);
+			var tc = tf.Statement as TryCatch;
+			if (tc == null)
+				return false;
+
+			return tf.FinallyBlock.HasAwait || tc.HasClauseWithAwait;
+		}
+
+		public int AddResumePoint (ResumableStatement stmt, int pc, StateMachineInitializer stateMachine, TryCatch catchBlock)
+		{
+			if (parent_try_block != null) {
+				pc = parent_try_block.AddResumePoint (this, pc, stateMachine, catchBlock);
 			} else {
 				pc = stateMachine.AddResumePoint (this);
 			}
@@ -5982,6 +6025,11 @@ namespace Mono.CSharp {
 
 			if (pc != first_resume_pc + resume_points.Count)
 				throw new InternalErrorException ("missed an intervening AddResumePoint?");
+
+			var tf = this as TryFinally;
+			if (tf != null && tf.Statement == catchBlock && first_catch_resume_pc < 0) {
+				first_catch_resume_pc = resume_points.Count;
+			}
 
 			resume_points.Add (stmt);
 			return pc;
@@ -6929,14 +6977,6 @@ namespace Mono.CSharp {
 			return ok;
 		}
 
-		protected override void EmitBeginException (EmitContext ec)
-		{
-			if (fini.HasAwait && stmt is TryCatch)
-				ec.BeginExceptionBlock ();
-
-			base.EmitBeginException (ec);
-		}
-
 		protected override void EmitTryBody (EmitContext ec)
 		{
 			if (fini.HasAwait) {
@@ -6946,7 +6986,7 @@ namespace Mono.CSharp {
 				ec.TryFinallyUnwind.Add (this);
 				stmt.Emit (ec);
 
-				if (stmt is TryCatch)
+				if (first_catch_resume_pc < 0 && stmt is TryCatch)
 					ec.EndExceptionBlock ();
 
 				ec.TryFinallyUnwind.Remove (this);
@@ -7186,6 +7226,12 @@ namespace Mono.CSharp {
 			}
 		}
 
+		public bool HasClauseWithAwait {
+			get {
+				return catch_sm != null;
+			}
+		}
+
 		public bool IsTryCatchFinally {
 			get {
 				return inside_try_finally;
@@ -7197,7 +7243,8 @@ namespace Mono.CSharp {
 			bool ok;
 
 			using (bc.Set (ResolveContext.Options.TryScope)) {
-				parent = bc.CurrentTryBlock;
+
+				parent_try_block = bc.CurrentTryBlock;
 
 				if (IsTryCatchFinally) {
 					ok = Block.Resolve (bc);
@@ -7205,10 +7252,13 @@ namespace Mono.CSharp {
 					using (bc.Set (ResolveContext.Options.TryWithCatchScope)) {
 						bc.CurrentTryBlock = this;
 						ok = Block.Resolve (bc);
-						bc.CurrentTryBlock = parent;
+						bc.CurrentTryBlock = parent_try_block;
 					}
 				}
 			}
+
+			var prev_catch = bc.CurrentTryCatch;
+			bc.CurrentTryCatch = this;
 
 			for (int i = 0; i < clauses.Count; ++i) {
 				var c = clauses[i];
@@ -7268,6 +7318,8 @@ namespace Mono.CSharp {
 				}
 			}
 
+			bc.CurrentTryCatch = prev_catch;
+
 			return base.Resolve (bc) && ok;
 		}
 
@@ -7300,10 +7352,12 @@ namespace Mono.CSharp {
 				}
 			}
 
-			if (!inside_try_finally)
+			if (state_variable == null) {
+				if (!inside_try_finally)
+					ec.EndExceptionBlock ();
+			} else {
 				ec.EndExceptionBlock ();
 
-			if (state_variable != null) {
 				ec.Emit (OpCodes.Ldloc, state_variable);
 
 				var labels = new Label [catch_sm.Count + 1];
@@ -7355,7 +7409,7 @@ namespace Mono.CSharp {
 			}
 
 			fc.DefiniteAssignment = try_fc ?? start_fc;
-			parent = null;
+			parent_try_block = null;
 			return res;
 		}
 
@@ -7786,7 +7840,11 @@ namespace Mono.CSharp {
 
 				for_each.variable.Type = var_type;
 
+				var prev_block = ec.CurrentBlock;
+				ec.CurrentBlock = variables_block;
 				var variable_ref = new LocalVariableReference (for_each.variable, loc).Resolve (ec);
+				ec.CurrentBlock = prev_block;
+
 				if (variable_ref == null)
 					return false;
 
@@ -8075,7 +8133,10 @@ namespace Mono.CSharp {
 						return false;
 				}
 
+				var prev_block = ec.CurrentBlock;
+				ec.CurrentBlock = for_each.variable.Block;
 				var variable_ref = new LocalVariableReference (variable, loc).Resolve (ec);
+				ec.CurrentBlock = prev_block;
 				if (variable_ref == null)
 					return false;
 
@@ -8233,7 +8294,7 @@ namespace Mono.CSharp {
 			ec.LoopEnd = ec.DefineLabel ();
 
 			if (!(Statement is Block))
-				ec.BeginCompilerScope ();
+				ec.BeginCompilerScope (variable.Block.Explicit.GetDebugSymbolScopeIndex ());
 
 			variable.CreateBuilder (ec);
 

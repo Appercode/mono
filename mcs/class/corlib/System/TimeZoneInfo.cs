@@ -90,14 +90,14 @@ namespace System
 		*/
 		private List<KeyValuePair<DateTime, TimeType>> transitions;
 
-		private static bool libcNotFound;
+		private static bool readlinkNotFound;
 
 		[DllImport ("libc")]
 		private static extern int readlink (string path, byte[] buffer, int buflen);
 
 		private static string readlink (string path)
 		{
-			if (libcNotFound)
+			if (readlinkNotFound)
 				return null;
 
 			byte[] buf = new byte [512];
@@ -106,7 +106,10 @@ namespace System
 			try {
 				ret = readlink (path, buf, buf.Length);
 			} catch (DllNotFoundException e) {
-				libcNotFound = true;
+				readlinkNotFound = true;
+				return null;
+			} catch (EntryPointNotFoundException e) {
+				readlinkNotFound = true;
 				return null;
 			}
 
@@ -120,8 +123,12 @@ namespace System
 		{
 			name = null;
 			var linkPath = readlink (path);
-			if (linkPath != null)
-				path = linkPath;
+			if (linkPath != null) {
+				if (Path.IsPathRooted(linkPath))
+					path = linkPath;
+				else
+					path = Path.Combine(Path.GetDirectoryName(path), linkPath);
+			}
 
 			path = Path.GetFullPath (path);
 
@@ -288,7 +295,8 @@ namespace System
 			var Istart = 0;
 			while (Istart < str.Length && !char.IsLetterOrDigit(str[Istart])) Istart++;
 			var Iend = str.Length - 1;
-			while (Iend > Istart && !char.IsLetterOrDigit(str[Iend])) Iend--;
+			while (Iend > Istart && !char.IsLetterOrDigit(str[Iend]) && str[Iend] != ')') // zone name can include parentheses like "Central Standard Time (Mexico)"
+				Iend--;
 			
 			return str.Substring (Istart, Iend-Istart+1);
 		}
@@ -327,8 +335,13 @@ namespace System
 		private static bool TryAddTicks (DateTime date, long ticks, out DateTime result, DateTimeKind kind = DateTimeKind.Unspecified)
 		{
 			var resultTicks = date.Ticks + ticks;
-			if (resultTicks < DateTime.MinValue.Ticks || resultTicks > DateTime.MaxValue.Ticks) {
-				result =  default (DateTime);
+			if (resultTicks < DateTime.MinValue.Ticks) {
+				result = DateTime.SpecifyKind (DateTime.MinValue, kind);
+				return false;
+			}
+
+			if (resultTicks > DateTime.MaxValue.Ticks) {
+				result = DateTime.SpecifyKind (DateTime.MaxValue, kind);
 				return false;
 			}
 
@@ -475,9 +488,7 @@ namespace System
 			var utcOffset = sourceTimeZone.GetUtcOffset (dateTime, out isDst);
 
 			DateTime utcDateTime;
-			if (!TryAddTicks (dateTime, -utcOffset.Ticks, out utcDateTime, DateTimeKind.Utc))
-				return DateTime.SpecifyKind (DateTime.MinValue, DateTimeKind.Utc);
-
+			TryAddTicks (dateTime, -utcOffset.Ticks, out utcDateTime, DateTimeKind.Utc);
 			return utcDateTime;
 		}
 
@@ -726,7 +737,8 @@ namespace System
 
 		public TimeSpan GetUtcOffset (DateTimeOffset dateTimeOffset)
 		{
-			throw new NotImplementedException ();
+			bool isDST;
+			return GetUtcOffset (dateTimeOffset.UtcDateTime, out isDST);
 		}
 
 		private TimeSpan GetUtcOffset (DateTime dateTime, out bool isDST)
@@ -861,7 +873,7 @@ namespace System
 				return true;
 
 			// We might be in the dateTime previous year's DST period
-			return IsInDSTForYear (rule, dateTime, dateTime.Year - 1);
+			return dateTime.Year > 1 && IsInDSTForYear (rule, dateTime, dateTime.Year - 1);
 		}
 
 		bool IsInDSTForYear (AdjustmentRule rule, DateTime dateTime, int year)
@@ -900,7 +912,7 @@ namespace System
 
 		public bool IsDaylightSavingTime (DateTimeOffset dateTimeOffset)
 		{
-			throw new NotImplementedException ();
+			return IsDaylightSavingTime (dateTimeOffset.DateTime);
 		}
 
 		internal DaylightTime GetDaylightChanges (int year)
@@ -1209,8 +1221,10 @@ namespace System
 
 			try {
 				return ParseTZBuffer (id, buffer, length);
+			} catch (InvalidTimeZoneException) {
+				throw;
 			} catch (Exception e) {
-				throw new InvalidTimeZoneException (e.Message);
+				throw new InvalidTimeZoneException ("Time zone information file contains invalid data", e);
 			}
 		}
 
@@ -1267,7 +1281,7 @@ namespace System
 			if (time_types.Count == 0)
 				throw new InvalidTimeZoneException ();
 
-			if (time_types.Count == 1 && ((TimeType)time_types[0]).IsDst)
+			if (time_types.Count == 1 && time_types[0].IsDst)
 				throw new InvalidTimeZoneException ();
 
 			TimeSpan baseUtcOffset = new TimeSpan (0);
@@ -1348,8 +1362,8 @@ namespace System
 
 			TimeZoneInfo tz;
 			if (adjustmentRules.Count == 0 && !storeTransition) {
-				TimeType t = (TimeType)time_types [0];
 				if (standardDisplayName == null) {
+					var t = time_types [0];
 					standardDisplayName = t.Name;
 					baseUtcOffset = new TimeSpan (0, 0, t.Offset);
 				}
@@ -1393,6 +1407,20 @@ namespace System
 			var types = new Dictionary<int, TimeType> (count);
 			for (int i = 0; i < count; i++) {
 				int offset = ReadBigEndianInt32 (buffer, index + 6 * i);
+
+				//
+				// The official tz database contains timezone with GMT offsets
+				// not only in whole hours/minutes but in seconds. This happens for years
+				// before 1901. For example
+				//
+				// NAME		        GMTOFF   RULES	FORMAT	UNTIL
+				// Europe/Madrid	-0:14:44 -	LMT	1901 Jan  1  0:00s
+				//
+				// .NET as of 4.6.2 cannot handle that and uses hours/minutes only, so
+				// we remove seconds to not crash later
+				//
+				offset = (offset / 60) * 60;
+
 				byte is_dst = buffer [index + 6 * i + 4];
 				byte abbrev = buffer [index + 6 * i + 5];
 				types.Add (i, new TimeType (offset, (is_dst != 0), abbreviations [(int)abbrev]));
@@ -1448,7 +1476,7 @@ namespace System
 #endregion
 	}
 
-	struct TimeType {
+	class TimeType {
 		public readonly int Offset;
 		public readonly bool IsDst;
 		public string Name;

@@ -16,6 +16,7 @@
 
 #include <mono/utils/mono-threads.h>
 #include <mono/utils/mono-threads-posix-signals.h>
+#include <mono/utils/mono-coop-semaphore.h>
 #include <mono/metadata/gc-internals.h>
 
 #include <errno.h>
@@ -40,7 +41,8 @@ typedef struct {
 	void *(*start_routine)(void*);
 	void *arg;
 	int flags;
-	MonoSemType registered;
+	gint32 priority;
+	MonoCoopSem registered;
 	HANDLE handle;
 } StartInfo;
 
@@ -59,35 +61,36 @@ inner_start_thread (void *arg)
 	/* Register the thread with the io-layer */
 	handle = wapi_create_thread_handle ();
 	if (!handle) {
-		res = MONO_SEM_POST (&(start_info->registered));
+		res = mono_coop_sem_post (&(start_info->registered));
 		g_assert (!res);
 		return NULL;
 	}
 	start_info->handle = handle;
 
 	info = mono_thread_info_attach (&result);
-	MONO_PREPARE_BLOCKING;
 
 	info->runtime_thread = TRUE;
 	info->handle = handle;
 
+	wapi_init_thread_info_priority(handle, start_info->priority);
+
 	if (flags & CREATE_SUSPENDED) {
 		info->create_suspended = TRUE;
-		MONO_SEM_INIT (&info->create_suspended_sem, 0);
+		mono_coop_sem_init (&info->create_suspended_sem, 0);
 	}
 
 	/* start_info is not valid after this */
-	res = MONO_SEM_POST (&(start_info->registered));
+	res = mono_coop_sem_post (&(start_info->registered));
 	g_assert (!res);
 	start_info = NULL;
 
 	if (flags & CREATE_SUSPENDED) {
-		while (MONO_SEM_WAIT (&info->create_suspended_sem) != 0 &&
-			   errno == EINTR);
-		MONO_SEM_DESTROY (&info->create_suspended_sem);
+		res = mono_coop_sem_wait (&info->create_suspended_sem, MONO_SEM_FLAGS_NONE);
+		g_assert (res != -1);
+
+		mono_coop_sem_destroy (&info->create_suspended_sem);
 	}
 
-	MONO_FINISH_BLOCKING;
 	/* Run the actual main function of the thread */
 	result = start_func (t_arg);
 
@@ -96,17 +99,20 @@ inner_start_thread (void *arg)
 }
 
 HANDLE
-mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer arg, guint32 stack_size, guint32 creation_flags, MonoNativeThreadId *out_tid)
+mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer arg, MonoThreadParm *tp, MonoNativeThreadId *out_tid)
 {
 	pthread_attr_t attr;
 	int res;
 	pthread_t thread;
 	StartInfo start_info;
+	guint32 stack_size;
+	int policy;
+	struct sched_param sp;
 
 	res = pthread_attr_init (&attr);
 	g_assert (!res);
 
-	if (stack_size == 0) {
+	if (tp->stack_size == 0) {
 #if HAVE_VALGRIND_MEMCHECK_H
 		if (RUNNING_ON_VALGRIND)
 			stack_size = 1 << 20;
@@ -115,7 +121,8 @@ mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer 
 #else
 		stack_size = (SIZEOF_VOID_P / 4) * 1024 * 1024;
 #endif
-	}
+	} else
+		stack_size = tp->stack_size;
 
 #ifdef PTHREAD_STACK_MIN
 	if (stack_size < PTHREAD_STACK_MIN)
@@ -127,27 +134,34 @@ mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer 
 	g_assert (!res);
 #endif
 
+	/*
+	 * For policies that respect priorities set the prirority for the new thread
+	 */ 
+	pthread_getschedparam(pthread_self(), &policy, &sp);
+	if ((policy == SCHED_FIFO) || (policy == SCHED_RR)) {
+		sp.sched_priority = wapi_thread_priority_to_posix_priority (tp->priority, policy);
+		res = pthread_attr_setschedparam (&attr, &sp);
+	}
+
 	memset (&start_info, 0, sizeof (StartInfo));
 	start_info.start_routine = (void *(*)(void *)) start_routine;
 	start_info.arg = arg;
-	start_info.flags = creation_flags;
-	MONO_SEM_INIT (&(start_info.registered), 0);
+	start_info.flags = tp->creation_flags;
+	start_info.priority = tp->priority;
+	mono_coop_sem_init (&(start_info.registered), 0);
 
 	/* Actually start the thread */
 	res = mono_gc_pthread_create (&thread, &attr, inner_start_thread, &start_info);
 	if (res) {
-		MONO_SEM_DESTROY (&(start_info.registered));
+		mono_coop_sem_destroy (&(start_info.registered));
 		return NULL;
 	}
 
-	MONO_TRY_BLOCKING;
 	/* Wait until the thread register itself in various places */
-	while (MONO_SEM_WAIT (&(start_info.registered)) != 0) {
-		/*if (EINTR != errno) ABORT("sem_wait failed"); */
-	}
-	MONO_FINISH_TRY_BLOCKING;
+	res = mono_coop_sem_wait (&start_info.registered, MONO_SEM_FLAGS_NONE);
+	g_assert (res != -1);
 
-	MONO_SEM_DESTROY (&(start_info.registered));
+	mono_coop_sem_destroy (&(start_info.registered));
 
 	if (out_tid)
 		*out_tid = thread;
@@ -163,7 +177,7 @@ mono_threads_core_create_thread (LPTHREAD_START_ROUTINE start_routine, gpointer 
 void
 mono_threads_core_resume_created (MonoThreadInfo *info, MonoNativeThreadId tid)
 {
-	MONO_SEM_POST (&info->create_suspended_sem);
+	mono_coop_sem_post (&info->create_suspended_sem);
 }
 
 gboolean
@@ -280,9 +294,36 @@ mono_native_thread_create (MonoNativeThreadId *tid, gpointer func, gpointer arg)
 }
 
 void
-mono_threads_core_set_name (MonoNativeThreadId tid, const char *name)
+mono_native_thread_set_name (MonoNativeThreadId tid, const char *name)
 {
-#if defined (HAVE_PTHREAD_SETNAME_NP) && !defined (__MACH__)
+#ifdef __MACH__
+	/*
+	 * We can't set the thread name for other threads, but we can at least make
+	 * it work for threads that try to change their own name.
+	 */
+	if (tid != mono_native_thread_id_get ())
+		return;
+
+	if (!name) {
+		pthread_setname_np ("");
+	} else {
+		char n [63];
+
+		strncpy (n, name, 63);
+		n [62] = '\0';
+		pthread_setname_np (n);
+	}
+#elif defined (__NetBSD__)
+	if (!name) {
+		pthread_setname_np (tid, "%s", (void*)"");
+	} else {
+		char n [PTHREAD_MAX_NAMELEN_NP];
+
+		strncpy (n, name, PTHREAD_MAX_NAMELEN_NP);
+		n [PTHREAD_MAX_NAMELEN_NP - 1] = '\0';
+		pthread_setname_np (tid, "%s", (void*)n);
+	}
+#elif defined (HAVE_PTHREAD_SETNAME_NP)
 	if (!name) {
 		pthread_setname_np (tid, "");
 	} else {

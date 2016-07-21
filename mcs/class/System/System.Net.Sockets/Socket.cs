@@ -702,8 +702,8 @@ namespace System.Net.Sockets
 			set {
 				ThrowIfDisposedAndClosed ();
 
-				if (value < 0)
-					throw new ArgumentOutOfRangeException ("value", "The value specified for a set operation is less than zero");
+				if (value < 0 || value > 255)
+					throw new ArgumentOutOfRangeException ("value", "The value specified for a set operation is less than zero or greater than 255.");
 
 				switch (address_family) {
 				case AddressFamily.InterNetwork:
@@ -991,16 +991,20 @@ namespace System.Net.Sockets
 
 		static IOAsyncCallback BeginAcceptCallback = new IOAsyncCallback (ares => {
 			SocketAsyncResult sockares = (SocketAsyncResult) ares;
-			Socket socket = null;
-
+			Socket acc_socket = null;
 			try {
-				socket = sockares.socket.Accept ();
+				if (sockares.AcceptSocket == null) {
+					acc_socket = sockares.socket.Accept ();
+				} else {
+					acc_socket = sockares.AcceptSocket;
+					sockares.socket.Accept (acc_socket);
+				}
+
 			} catch (Exception e) {
 				sockares.Complete (e);
 				return;
 			}
-
-			sockares.Complete (socket);
+			sockares.Complete (acc_socket);
 		});
 
 		public IAsyncResult BeginAccept (int receiveSize, AsyncCallback callback, object state)
@@ -1147,7 +1151,12 @@ namespace System.Net.Sockets
 
 			if (local_end == null)
 				throw new ArgumentNullException("local_end");
-
+				
+			var ipEndPoint = local_end as IPEndPoint;
+			if (ipEndPoint != null) {
+				local_end = RemapIPEndPoint (ipEndPoint);	
+			}
+			
 			int error;
 			Bind_internal (safe_handle, local_end.Serialize(), out error);
 
@@ -1239,6 +1248,8 @@ namespace System.Net.Sockets
 			int error = 0;
 			foreach (IPAddress address in addresses) {
 				IPEndPoint iep = new IPEndPoint (address, port);
+				
+				iep = RemapIPEndPoint (iep);
 
 				Connect_internal (safe_handle, iep.Serialize (), out error);
 				if (error == 0) {
@@ -1283,6 +1294,10 @@ namespace System.Net.Sockets
 
 			if (is_listening)
 				throw new InvalidOperationException ();
+				
+			if (ep != null) {
+				remoteEP = RemapIPEndPoint (ep);
+			}
 
 			SocketAddress serial = remoteEP.Serialize ();
 
@@ -1313,7 +1328,7 @@ namespace System.Net.Sockets
 			if (e.RemoteEndPoint == null)
 				throw new ArgumentNullException ("remoteEP");
 
-			InitSocketAsyncEventArgs (e, ConnectAsyncCallback, e, SocketOperation.Connect);
+			InitSocketAsyncEventArgs (e, null, e, SocketOperation.Connect);
 
 			try {
 				IPAddress [] addresses;
@@ -1408,6 +1423,8 @@ namespace System.Net.Sockets
 					sockares.Complete (new SocketException ((int) SocketError.AddressNotAvailable), true);
 					return sockares;
 				}
+				
+				end_point = RemapIPEndPoint (ep);
 			}
 
 			int error = 0;
@@ -3150,27 +3167,24 @@ namespace System.Net.Sockets
 
 		public void SetSocketOption (SocketOptionLevel optionLevel, SocketOptionName optionName, bool optionValue)
 		{
-			ThrowIfDisposedAndClosed ();
-
-			int error;
 			int int_val = optionValue ? 1 : 0;
-			SetSocketOption_internal (safe_handle, optionLevel, optionName, null, null, int_val, out error);
 
-			if (error != 0) {
-				if (error == (int) SocketError.InvalidArgument)
-					throw new ArgumentException ();
-				throw new SocketException (error);
-			}
+			SetSocketOption (optionLevel, optionName, int_val);
 		}
 
 		public void SetSocketOption (SocketOptionLevel optionLevel, SocketOptionName optionName, int optionValue)
 		{
 			ThrowIfDisposedAndClosed ();
 
+			if (optionLevel == SocketOptionLevel.Socket && optionName == SocketOptionName.ReuseAddress && optionValue != 0 && !SupportsPortReuse (protocol_type))
+				throw new SocketException ((int) SocketError.OperationNotSupported, "Operating system sockets do not support ReuseAddress.\nIf your socket is not intended to bind to the same address and port multiple times remove this option, otherwise you should ignore this exception inside a try catch and check that ReuseAddress is true before binding to the same address and port multiple times.");
+
 			int error;
 			SetSocketOption_internal (safe_handle, optionLevel, optionName, null, null, optionValue, out error);
 
 			if (error != 0) {
+				if (error == (int) SocketError.InvalidArgument)
+					throw new ArgumentException ();
 				throw new SocketException (error);
 			}
 		}
@@ -3414,7 +3428,9 @@ namespace System.Net.Sockets
 		void InitSocketAsyncEventArgs (SocketAsyncEventArgs e, AsyncCallback callback, object state, SocketOperation operation)
 		{
 			e.socket_async_result.Init (this, callback, state, operation);
-
+			if (e.AcceptSocket != null) {
+				e.socket_async_result.AcceptSocket = e.AcceptSocket;
+			}
 			e.current_socket = this;
 			e.SetLastOperation (SocketOperationToSocketAsyncOperation (operation));
 			e.SocketError = SocketError.Success;
@@ -3444,7 +3460,15 @@ namespace System.Net.Sockets
 				throw new NotImplementedException (String.Format ("Operation {0} is not implemented", op));
 			}
 		}
-
+		
+		IPEndPoint RemapIPEndPoint (IPEndPoint input) {
+			// If socket is DualMode ensure we automatically handle mapping IPv4 addresses to IPv6.
+			if (IsDualMode && input.AddressFamily == AddressFamily.InterNetwork)
+				return new IPEndPoint (input.Address.MapToIPv6 (), input.Port);
+			
+			return input;
+		}
+		
 		[StructLayout (LayoutKind.Sequential)]
 		struct WSABUF {
 			public int len;
@@ -3455,7 +3479,7 @@ namespace System.Net.Sockets
 		internal static extern void cancel_blocking_socket_operation (Thread thread);
 
 		[MethodImplAttribute(MethodImplOptions.InternalCall)]
-		internal static extern bool SupportsPortReuse ();
+		internal static extern bool SupportsPortReuse (ProtocolType proto);
 	}
 }
 

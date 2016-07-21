@@ -109,7 +109,7 @@ namespace MonoTests.System.Threading
 			}
 
 			// check a class in mscorlib to determine if we're running on Mono
-			if (Type.GetType ("System.MonoType", false) != null)
+			if (Type.GetType ("Mono.Runtime", false) != null)
 				is_mono = true;
 		}
 
@@ -387,6 +387,7 @@ namespace MonoTests.System.Threading
 		}
 
 		[Test]
+		[Category ("NotWorking")] // setting the priority of a Thread before it is started isn't implemented in Mono yet
 		public void TestPriority1()
 		{
 			if (is_win32 && is_mono)
@@ -396,10 +397,11 @@ namespace MonoTests.System.Threading
 			Thread TestThread = new Thread(new ThreadStart(test1.TestMethod));
 			try {
 				TestThread.Priority=ThreadPriority.BelowNormal;
-				ThreadPriority after = TestThread.Priority;
+				ThreadPriority before = TestThread.Priority;
+				Assert.AreEqual (ThreadPriority.BelowNormal, before, "#40 Unexpected priority before thread start: ");
 				TestThread.Start();
 				TestUtil.WaitForAlive (TestThread, "wait7");
-				ThreadPriority before = TestThread.Priority;
+				ThreadPriority after = TestThread.Priority;
 				Assert.AreEqual (before, after, "#41 Unexpected Priority Change: ");
 			} finally {
 #if MONO_FEATURE_THREAD_ABORT
@@ -570,37 +572,6 @@ namespace MonoTests.System.Threading
 			Thread t = new Thread (new ThreadStart (Rename));
 			t.Name = "a";
 			t.Name = "b";
-		}
-
-		bool rename_finished;
-		bool rename_failed;
-
-		[Test]
-		public void RenameTpThread ()
-		{
-			object monitor = new object ();
-			ThreadPool.QueueUserWorkItem (new WaitCallback (Rename_callback), monitor);
-			lock (monitor) {
-				if (!rename_finished)
-					Monitor.Wait (monitor);
-			}
-			Assert.IsTrue (!rename_failed);
-		}
-
-		void Rename_callback (object o) {
-			Thread.CurrentThread.Name = "a";
-			try {
-				Thread.CurrentThread.Name = "b";
-				//Console.WriteLine ("Thread name is: {0}", Thread.CurrentThread.Name);
-			} catch (Exception e) {
-				//Console.Error.WriteLine (e);
-				rename_failed = true;
-			}
-			object monitor = o;
-			lock (monitor) {
-				rename_finished = true;
-				Monitor.Pulse (monitor);
-			}
 		}
 
 		[Test]
@@ -964,6 +935,7 @@ namespace MonoTests.System.Threading
 			}
 		}
 
+#if MONO_FEATURE_MULTIPLE_APPDOMAINS
 		[Test]
 		public void CurrentThread_Domains ()
 		{
@@ -973,6 +945,7 @@ namespace MonoTests.System.Threading
 			Assert.IsTrue (o.Run ());
 			AppDomain.Unload (ad);
 		}
+#endif // MONO_FEATURE_MULTIPLE_APPDOMAINS
 
 		void CheckIsRunning (string s, Thread t)
 		{

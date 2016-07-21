@@ -215,6 +215,10 @@ namespace Mono.CSharp
 			mcs.StartInfo.RedirectStandardOutput=true;
 			mcs.StartInfo.RedirectStandardError=true;
 			mcs.ErrorDataReceived += new DataReceivedEventHandler (McsStderrDataReceived);
+
+			// Use same text decoder as mcs and not user set values in Console
+			mcs.StartInfo.StandardOutputEncoding =
+			mcs.StartInfo.StandardErrorEncoding = Encoding.UTF8;
 			
 			try {
 				mcs.Start();
@@ -366,7 +370,7 @@ namespace Mono.CSharp
 				}
 			}
 
-			args.Append("/sdk:4.5");
+			args.Append ("/noconfig ");
 
 			args.Append (" -- ");
 			foreach (string source in fileNames)

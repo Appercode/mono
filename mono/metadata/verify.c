@@ -7,6 +7,7 @@
  * Copyright 2001-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
  * Copyright 2011 Rodrigo Kumpera
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #include <config.h>
 
@@ -390,7 +391,7 @@ mono_type_create_fnptr_from_mono_method (VerifyContext *ctx, MonoMethod *method)
 /*
  * mono_type_is_enum_type:
  * 
- * Returns TRUE if @type is an enum type. 
+ * Returns: TRUE if @type is an enum type. 
  */
 static gboolean
 mono_type_is_enum_type (MonoType *type)
@@ -405,14 +406,14 @@ mono_type_is_enum_type (MonoType *type)
 /*
  * mono_type_is_value_type:
  * 
- * Returns TRUE if @type is named after @namespace.@name.
+ * Returns: TRUE if @type is named after @namespace.@name.
  * 
  */
 static gboolean
-mono_type_is_value_type (MonoType *type, const char *namespace, const char *name)
+mono_type_is_value_type (MonoType *type, const char *namespace_, const char *name)
 {
 	return type->type == MONO_TYPE_VALUETYPE &&
-		!strcmp (namespace, type->data.klass->name_space) &&
+		!strcmp (namespace_, type->data.klass->name_space) &&
 		!strcmp (name, type->data.klass->name);
 }
 
@@ -466,7 +467,7 @@ mono_class_has_default_constructor (MonoClass *klass)
 	int i;
 
 	mono_class_setup_methods (klass);
-	if (klass->exception_type)
+	if (mono_class_has_failure (klass))
 		return FALSE;
 
 	for (i = 0; i < klass->method.count; ++i) {
@@ -639,8 +640,10 @@ is_valid_generic_instantiation (MonoGenericContainer *gc, MonoGenericContext *co
 	return TRUE;
 }
 
-/*
- * Return true if @candidate is constraint compatible with @target.
+/**
+ * mono_generic_param_is_constraint_compatible:
+ *
+ * Returns: TRUE if @candidate is constraint compatible with @target.
  * 
  * This means that @candidate constraints are a super set of @target constaints
  */
@@ -882,16 +885,15 @@ mono_type_is_valid_in_context (VerifyContext *ctx, MonoType *type)
 
 	klass = mono_class_from_mono_type (type);
 	mono_class_init (klass);
-	if (mono_loader_get_last_error () || klass->exception_type != MONO_EXCEPTION_NONE) {
+	if (mono_class_has_failure (klass)) {
 		if (klass->generic_class && !mono_class_is_valid_generic_instantiation (NULL, klass))
 			ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Invalid generic instantiation of type %s.%s at 0x%04x", klass->name_space, klass->name, ctx->ip_offset), MONO_EXCEPTION_TYPE_LOAD);
 		else
 			ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Could not load type %s.%s at 0x%04x", klass->name_space, klass->name, ctx->ip_offset), MONO_EXCEPTION_TYPE_LOAD);
-		mono_loader_clear_error ();
 		return FALSE;
 	}
 
-	if (klass->generic_class && klass->generic_class->container_class->exception_type != MONO_EXCEPTION_NONE) {
+	if (klass->generic_class && mono_class_has_failure (klass->generic_class->container_class)) {
 		ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Could not load type %s.%s at 0x%04x", klass->name_space, klass->name, ctx->ip_offset), MONO_EXCEPTION_TYPE_LOAD);
 		return FALSE;
 	}
@@ -941,7 +943,7 @@ verifier_load_field (VerifyContext *ctx, int token, MonoClass **out_klass, const
 	MonoClass *klass = NULL;
 
 	if (ctx->method->wrapper_type != MONO_WRAPPER_NONE) {
-		field = mono_method_get_wrapper_data (ctx->method, (guint32)token);
+		field = (MonoClassField *)mono_method_get_wrapper_data (ctx->method, (guint32)token);
 		klass = field ? field->parent : NULL;
 	} else {
 		if (!IS_FIELD_DEF_OR_REF (token) || !token_bounds_check (ctx->image, token)) {
@@ -978,7 +980,7 @@ verifier_load_method (VerifyContext *ctx, int token, const char *opcode) {
 
 
 	if (ctx->method->wrapper_type != MONO_WRAPPER_NONE) {
-		method = mono_method_get_wrapper_data (ctx->method, (guint32)token);
+		method = (MonoMethod *)mono_method_get_wrapper_data (ctx->method, (guint32)token);
 	} else {
 		MonoError error;
 		if (!IS_METHOD_DEF_OR_REF_OR_SPEC (token) || !token_bounds_check (ctx->image, token)) {
@@ -1006,7 +1008,7 @@ verifier_load_type (VerifyContext *ctx, int token, const char *opcode) {
 	MonoType* type;
 	
 	if (ctx->method->wrapper_type != MONO_WRAPPER_NONE) {
-		MonoClass *klass = mono_method_get_wrapper_data (ctx->method, (guint32)token);
+		MonoClass *klass = (MonoClass *)mono_method_get_wrapper_data (ctx->method, (guint32)token);
 		type = klass ? &klass->byval_arg : NULL;
 	} else {
 		MonoError error;
@@ -1018,9 +1020,8 @@ verifier_load_type (VerifyContext *ctx, int token, const char *opcode) {
 		mono_error_cleanup (&error); /*FIXME don't swallow the error */
 	}
 
-	if (!type || mono_loader_get_last_error ()) {
+	if (!type) {
 		ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Cannot load type from token 0x%08x for %s at 0x%04x", token, opcode, ctx->ip_offset), MONO_EXCEPTION_BAD_IMAGE);
-		mono_loader_clear_error ();
 		return NULL;
 	}
 
@@ -1175,7 +1176,7 @@ mono_free_verify_list (GSList *list)
 	GSList *tmp;
 
 	for (tmp = list; tmp; tmp = tmp->next) {
-		info = tmp->data;
+		info = (MonoVerifyInfoExtended *)tmp->data;
 		g_free (info->info.message);
 		g_free (info);
 	}
@@ -1875,8 +1876,12 @@ dump_stack_state (ILCodeDesc *state)
 }
 #endif
 
-/*Returns TRUE if candidate array type can be assigned to target.
- *Both parameters MUST be of type MONO_TYPE_ARRAY (target->type == MONO_TYPE_ARRAY)
+/**
+ * is_array_type_compatible:
+ *
+ * Returns TRUE if candidate array type can be assigned to target.
+ *
+ * Both parameters MUST be of type MONO_TYPE_ARRAY (target->type == MONO_TYPE_ARRAY)
  */
 static gboolean
 is_array_type_compatible (MonoType *target, MonoType *candidate)
@@ -2072,49 +2077,35 @@ init_stack_with_value_at_exception_boundary (VerifyContext *ctx, ILCodeDesc *cod
 	if (mono_type_is_generic_argument (type))
 		code->stack->stype |= BOXED_MASK;
 }
+/* Class lazy loading functions */
+static GENERATE_GET_CLASS_WITH_CACHE (ienumerable, System.Collections.Generic, IEnumerable`1)
+static GENERATE_GET_CLASS_WITH_CACHE (icollection, System.Collections.Generic, ICollection`1)
+static GENERATE_GET_CLASS_WITH_CACHE (ireadonly_list, System.Collections.Generic, IReadOnlyList`1)
+static GENERATE_GET_CLASS_WITH_CACHE (ireadonly_collection, System.Collections.Generic, IReadOnlyCollection`1)
+
 
 static MonoClass*
 get_ienumerable_class (void)
 {
-	static MonoClass* generic_ienumerable_class = NULL;
-
-	if (generic_ienumerable_class == NULL)
-		generic_ienumerable_class = mono_class_from_name (mono_defaults.corlib,
-			"System.Collections.Generic", "IEnumerable`1");
-		return generic_ienumerable_class;
+	return mono_class_get_ienumerable_class ();
 }
 
 static MonoClass*
 get_icollection_class (void)
 {
-	static MonoClass* generic_icollection_class = NULL;
-
-	if (generic_icollection_class == NULL)
-		generic_icollection_class = mono_class_from_name (mono_defaults.corlib,
-			"System.Collections.Generic", "ICollection`1");
-		return generic_icollection_class;
+	return mono_class_get_icollection_class ();
 }
 
 static MonoClass*
 get_ireadonlylist_class (void)
 {
-	static MonoClass* generic_ireadonlylist_class = NULL;
-
-	if (generic_ireadonlylist_class == NULL)
-		generic_ireadonlylist_class = mono_class_from_name (mono_defaults.corlib,
-			"System.Collections.Generic", "IReadOnlyList`1");
-	return generic_ireadonlylist_class;
+	return mono_class_get_ireadonly_list_class ();
 }
 
 static MonoClass*
 get_ireadonlycollection_class (void)
 {
-	static MonoClass* generic_ireadonlycollection_class = NULL;
-
-	if (generic_ireadonlycollection_class == NULL)
-		generic_ireadonlycollection_class = mono_class_from_name (mono_defaults.corlib,
-			"System.Collections.Generic", "IReadOnlyCollection`1");
-	return generic_ireadonlycollection_class;
+	return mono_class_get_ireadonly_collection_class ();
 }
 
 static MonoClass*
@@ -2444,21 +2435,21 @@ recursive_boxed_constraint_type_check (VerifyContext *ctx, MonoType *type, MonoC
 
 	if (mono_type_is_generic_argument (constraint_type)) {
 		MonoGenericParam *param = get_generic_param (ctx, constraint_type);
-		MonoClass **class;
+		MonoClass **klass;
 		if (!param)
 			return FALSE;
-		for (class = mono_generic_param_info (param)->constraints; class && *class; ++class) {
-			if (recursive_boxed_constraint_type_check (ctx, type, *class, recursion_level - 1))
+		for (klass = mono_generic_param_info (param)->constraints; klass && *klass; ++klass) {
+			if (recursive_boxed_constraint_type_check (ctx, type, *klass, recursion_level - 1))
 				return TRUE;
 		}
 	}
 	return FALSE;
 }
 
-/*
+/** 
  * is_compatible_boxed_valuetype:
  * 
- * Returns TRUE if @candidate / @stack is a valid boxed valuetype. 
+ * Returns: TRUE if @candidate / @stack is a valid boxed valuetype. 
  * 
  * @type The source type. It it tested to be of the proper type.    
  * @candidate type of the boxed valuetype.
@@ -2476,13 +2467,13 @@ is_compatible_boxed_valuetype (VerifyContext *ctx, MonoType *type, MonoType *can
 
 	if (mono_type_is_generic_argument (candidate)) {
 		MonoGenericParam *param = get_generic_param (ctx, candidate);
-		MonoClass **class;
+		MonoClass **klass;
 		if (!param)
 			return FALSE;
 
-		for (class = mono_generic_param_info (param)->constraints; class && *class; ++class) {
+		for (klass = mono_generic_param_info (param)->constraints; klass && *klass; ++klass) {
 			/*256 should be enough since there can't be more than 255 generic arguments.*/
-			if (recursive_boxed_constraint_type_check (ctx, type, *class, 256))
+			if (recursive_boxed_constraint_type_check (ctx, type, *klass, 256))
 				return TRUE;
 		}
 	}
@@ -2777,7 +2768,7 @@ verify_delegate_compatibility (VerifyContext *ctx, MonoClass *delegate, ILStackD
 			CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("This object not compatible with function pointer for delegate creation at 0x%04x", ctx->ip_offset));
 	} else {
 		if (method->flags & METHOD_ATTRIBUTE_STATIC) {
-			if (!stack_slot_is_null_literal (value) && !is_first_arg_bound)
+			if (!stack_slot_is_null_literal (value))
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Non-null this args used with static function for delegate creation at 0x%04x", ctx->ip_offset));
 		} else {
 			if (!verify_stack_type_compatibility_full (ctx, &method->klass->byval_arg, value, FALSE, TRUE) && !stack_slot_is_null_literal (value))
@@ -3148,7 +3139,7 @@ do_ret (VerifyContext *ctx)
  * TODO handle calling .ctor outside one or calling the .ctor for other class but super  
  */
 static void
-do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual)
+do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual_)
 {
 	MonoError error;
 	int param_count, i;
@@ -3158,10 +3149,10 @@ do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual)
 	gboolean virt_check_this = FALSE;
 	gboolean constrained = ctx->prefix_set & PREFIX_CONSTRAINED;
 
-	if (!(method = verifier_load_method (ctx, method_token, virtual ? "callvirt" : "call")))
+	if (!(method = verifier_load_method (ctx, method_token, virtual_ ? "callvirt" : "call")))
 		return;
 
-	if (virtual) {
+	if (virtual_) {
 		CLEAR_PREFIX (ctx, PREFIX_CONSTRAINED);
 
 		if (method->klass->valuetype) // && !constrained ???
@@ -3209,10 +3200,10 @@ do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual)
 		}
 
 		if (stack_slot_is_managed_mutability_pointer (value))
-			CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot use a readonly pointer as argument of %s at 0x%04x", virtual ? "callvirt" : "call",  ctx->ip_offset));
+			CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot use a readonly pointer as argument of %s at 0x%04x", virtual_ ? "callvirt" : "call",  ctx->ip_offset));
 
 		if ((ctx->prefix_set & PREFIX_TAIL) && stack_slot_is_managed_pointer (value)) {
-			ADD_VERIFY_ERROR (ctx, g_strdup_printf ("Cannot  pass a byref argument to a tail %s at 0x%04x", virtual ? "callvirt" : "call",  ctx->ip_offset));
+			ADD_VERIFY_ERROR (ctx, g_strdup_printf ("Cannot  pass a byref argument to a tail %s at 0x%04x", virtual_ ? "callvirt" : "call",  ctx->ip_offset));
 			return;
 		}
 	}
@@ -3244,7 +3235,7 @@ do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual)
 		if (virt_check_this && !stack_slot_is_this_pointer (value) && !(method->klass->valuetype || stack_slot_is_boxed_value (value)))
 			CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot use the call opcode with a non-final virtual method on an object different than the 'this' pointer at 0x%04x", ctx->ip_offset));
 
-		if (constrained && virtual) {
+		if (constrained && virtual_) {
 			if (!stack_slot_is_managed_pointer (value))
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Object is not a managed pointer for a constrained call at 0x%04x", ctx->ip_offset));
 			if (!mono_metadata_type_equal_full (mono_type_get_type_byval (value->type), mono_type_get_underlying_type (ctx->constrained_type), TRUE))
@@ -3255,10 +3246,10 @@ do_invoke_method (VerifyContext *ctx, int method_token, gboolean virtual)
 			if (stack_slot_is_managed_pointer (value) && !mono_class_from_mono_type (value->type)->valuetype)
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot call a reference type using a managed pointer to the this arg at 0x%04x", ctx->ip_offset));
 	
-			if (!virtual && mono_class_from_mono_type (value->type)->valuetype && !method->klass->valuetype && !stack_slot_is_boxed_value (value))
+			if (!virtual_ && mono_class_from_mono_type (value->type)->valuetype && !method->klass->valuetype && !stack_slot_is_boxed_value (value))
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot call a valuetype baseclass at 0x%04x", ctx->ip_offset));
 	
-			if (virtual && mono_class_from_mono_type (value->type)->valuetype && !stack_slot_is_boxed_value (value))
+			if (virtual_ && mono_class_from_mono_type (value->type)->valuetype && !stack_slot_is_boxed_value (value))
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot use a valuetype with callvirt at 0x%04x", ctx->ip_offset));
 	
 			if (method->klass->valuetype && (stack_slot_is_boxed_value (value) || !stack_slot_is_managed_pointer (value)))
@@ -3627,7 +3618,7 @@ do_load_token (VerifyContext *ctx, int token)
 
 	if (ctx->method->wrapper_type != MONO_WRAPPER_NONE) {
 		handle = mono_method_get_wrapper_data (ctx->method, token);
-		handle_class = mono_method_get_wrapper_data (ctx->method, token + 1);
+		handle_class = (MonoClass *)mono_method_get_wrapper_data (ctx->method, token + 1);
 		if (handle_class == mono_defaults.typehandle_class)
 			handle = &((MonoClass*)handle)->byval_arg;
 	} else {
@@ -4353,19 +4344,19 @@ do_switch (VerifyContext *ctx, int count, const unsigned char *data)
 }
 
 static void
-do_load_function_ptr (VerifyContext *ctx, guint32 token, gboolean virtual)
+do_load_function_ptr (VerifyContext *ctx, guint32 token, gboolean virtual_)
 {
 	ILStackDesc *top;
 	MonoMethod *method;
 
-	if (virtual && !check_underflow (ctx, 1))
+	if (virtual_ && !check_underflow (ctx, 1))
 		return;
 
-	if (!virtual && !check_overflow (ctx))
+	if (!virtual_ && !check_overflow (ctx))
 		return;
 
 	if (ctx->method->wrapper_type != MONO_WRAPPER_NONE) {
-		method = mono_method_get_wrapper_data (ctx->method, (guint32)token);
+		method = (MonoMethod *)mono_method_get_wrapper_data (ctx->method, (guint32)token);
 		if (!method) {
 			ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Invalid token %x for ldftn  at 0x%04x", token, ctx->ip_offset), MONO_EXCEPTION_BAD_IMAGE);
 			return;
@@ -4376,14 +4367,14 @@ do_load_function_ptr (VerifyContext *ctx, guint32 token, gboolean virtual)
 			return;
 		}
 
-		if (!(method = verifier_load_method (ctx, token, virtual ? "ldvirtfrn" : "ldftn")))
+		if (!(method = verifier_load_method (ctx, token, virtual_ ? "ldvirtfrn" : "ldftn")))
 			return;
 	}
 
 	if (mono_method_is_constructor (method))
 		CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Cannot use ldftn with a constructor at 0x%04x", ctx->ip_offset));
 
-	if (virtual) {
+	if (virtual_) {
 		ILStackDesc *top = stack_pop (ctx);
 	
 		if (stack_slot_get_type (top) != TYPE_COMPLEX || top->type->type == MONO_TYPE_VALUETYPE)
@@ -4711,7 +4702,7 @@ end_verify:
 #define HANDLER_START(clause) ((clause)->flags == MONO_EXCEPTION_CLAUSE_FILTER ? (clause)->data.filter_offset : clause->handler_offset)
 #define IS_CATCH_OR_FILTER(clause) ((clause)->flags == MONO_EXCEPTION_CLAUSE_FILTER || (clause)->flags == MONO_EXCEPTION_CLAUSE_NONE)
 
-/*
+/**
  * is_clause_in_range :
  * 
  * Returns TRUE if either the protected block or the handler of @clause is in the @start - @end range.  
@@ -4726,7 +4717,7 @@ is_clause_in_range (MonoExceptionClause *clause, guint32 start, guint32 end)
 	return FALSE;
 }
 
-/*
+/**
  * is_clause_inside_range :
  * 
  * Returns TRUE if @clause lies completely inside the @start - @end range.  
@@ -4741,7 +4732,7 @@ is_clause_inside_range (MonoExceptionClause *clause, guint32 start, guint32 end)
 	return TRUE;
 }
 
-/*
+/**
  * is_clause_nested :
  * 
  * Returns TRUE if @nested is nested in @clause.   
@@ -4862,9 +4853,10 @@ mono_method_verify (MonoMethod *method, int level)
 		return ctx.list;
 	}
 
-	ctx.header = mono_method_get_header (method);
+	ctx.header = mono_method_get_header_checked (method, &error);
 	if (!ctx.header) {
-		ADD_VERIFY_ERROR (&ctx, g_strdup_printf ("Could not decode method header"));
+		ADD_VERIFY_ERROR (&ctx, g_strdup_printf ("Could not decode method header due to %s", mono_error_get_message (&error)));
+		mono_error_cleanup (&error);
 		finish_collect_stats ();
 		return ctx.list;
 	}
@@ -4886,7 +4878,7 @@ mono_method_verify (MonoMethod *method, int level)
 	memset(ctx.code, 0, sizeof (ILCodeDesc) * ctx.header->code_size);
 
 	ctx.num_locals = ctx.header->num_locals;
-	ctx.locals = g_memdup (ctx.header->locals, sizeof (MonoType*) * ctx.header->num_locals);
+	ctx.locals = (MonoType **)g_memdup (ctx.header->locals, sizeof (MonoType*) * ctx.header->num_locals);
 	_MEM_ALLOC (sizeof (MonoType*) * ctx.header->num_locals);
 
 	if (ctx.num_locals > 0 && !ctx.header->init_locals)
@@ -5023,7 +5015,7 @@ mono_method_verify (MonoMethod *method, int level)
 	if (!ctx.valid)
 		goto cleanup;
 
-	original_bb = bb = mono_basic_block_split (method, &error);
+	original_bb = bb = mono_basic_block_split (method, &error, ctx.header);
 	if (!mono_error_ok (&error)) {
 		ADD_VERIFY_ERROR (&ctx, g_strdup_printf ("Invalid branch target: %s", mono_error_get_message (&error)));
 		mono_error_cleanup (&error);
@@ -5967,7 +5959,7 @@ mono_method_verify (MonoMethod *method, int level)
 	if (mono_method_is_constructor (ctx.method) && !ctx.super_ctor_called && !ctx.method->klass->valuetype && ctx.method->klass != mono_defaults.object_class) {
 		char *method_name = mono_method_full_name (ctx.method, TRUE);
 		char *type = mono_type_get_full_name (ctx.method->klass);
-		if (ctx.method->klass->parent && ctx.method->klass->parent->exception_type != MONO_EXCEPTION_NONE)
+		if (ctx.method->klass->parent && mono_class_has_failure (ctx.method->klass->parent))
 			CODE_NOT_VERIFIABLE (&ctx, g_strdup_printf ("Constructor %s for type %s not calling base type ctor due to a TypeLoadException on base type.", method_name, type));
 		else
 			CODE_NOT_VERIFIABLE (&ctx, g_strdup_printf ("Constructor %s for type %s not calling base type ctor.", method_name, type));
@@ -5988,7 +5980,7 @@ cleanup:
 	g_slist_free (ctx.funptrs);
 
 	for (tmp = ctx.exception_types; tmp; tmp = tmp->next)
-		mono_metadata_free_type (tmp->data);
+		mono_metadata_free_type ((MonoType *)tmp->data);
 	g_slist_free (ctx.exception_types);
 
 	for (i = 0; i < ctx.num_locals; ++i) {
@@ -6020,8 +6012,11 @@ mono_verify_corlib ()
 	return NULL;
 }
 
-/*
- * Returns true if @method needs to be verified.
+/**
+ * mono_verifier_is_enabled_for_method:
+ * @method: the method to probe
+ *
+ * Returns TRUE if @method needs to be verified.
  * 
  */
 gboolean
@@ -6030,8 +6025,11 @@ mono_verifier_is_enabled_for_method (MonoMethod *method)
 	return mono_verifier_is_enabled_for_class (method->klass) && (method->wrapper_type == MONO_WRAPPER_NONE || method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD);
 }
 
-/*
- * Returns true if @klass need to be verified.
+/**
+ * mono_verifier_is_enabled_for_class:
+ * @klass: The `MonoClass` to probe
+ *
+ * Returns TRUE if @klass need to be verified.
  * 
  */
 gboolean
@@ -6137,15 +6135,15 @@ verify_class_for_overlapping_reference_fields (MonoClass *klass)
 static guint
 field_hash (gconstpointer key)
 {
-	const MonoClassField *field = key;
+	const MonoClassField *field = (const MonoClassField *)key;
 	return g_str_hash (field->name) ^ mono_metadata_type_hash (field->type); /**/
 }
 
 static gboolean
 field_equals (gconstpointer _a, gconstpointer _b)
 {
-	const MonoClassField *a = _a;
-	const MonoClassField *b = _b;
+	const MonoClassField *a = (const MonoClassField *)_a;
+	const MonoClassField *b = (const MonoClassField *)_b;
 	return !strcmp (a->name, b->name) && mono_metadata_type_equal (a->type, b->type);
 }
 

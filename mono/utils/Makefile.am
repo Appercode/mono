@@ -27,6 +27,9 @@ monoutils_sources = \
 	mono-dl-darwin.c	\
 	mono-dl-posix.c		\
 	mono-dl.h		\
+	mono-log-windows.c	\
+	mono-log-common.c	\
+	mono-log-posix.c	\
 	mono-internal-hash.c	\
 	mono-internal-hash.h	\
 	mono-io-portability.c 	\
@@ -37,8 +40,9 @@ monoutils_sources = \
 	mono-mmap.c  		\
 	mono-mmap.h  		\
 	mono-mmap-internals.h	\
-	mono-mutex.c  		\
-	mono-mutex.h  		\
+	mono-os-mutex.h		\
+	mono-coop-mutex.h		\
+	mono-once.h		\
 	mono-lazy-init.h		\
 	mono-networkinterfaces.c		\
 	mono-networkinterfaces.h		\
@@ -53,8 +57,8 @@ monoutils_sources = \
 	mono-uri.c		\
 	mono-poll.c		\
 	mono-path.c		\
-	mono-semaphore.c	\
-	mono-semaphore.h	\
+	mono-os-semaphore.h	\
+	mono-coop-semaphore.h		\
 	mono-sigcontext.h	\
 	mono-stdlib.c 		\
 	mono-property-hash.h 	\
@@ -147,7 +151,9 @@ monoutils_sources = \
 	parse.c \
 	parse.h	\
 	checked-build.c \
-	checked-build.h
+	checked-build.h \
+	w32handle.c \
+	w32handle.h
 
 arch_sources = 
 
@@ -229,4 +235,4 @@ libmonoutilsinclude_HEADERS = 	\
 	mono-dl-fallback.h	\
 	mono-counters.h
 
-EXTRA_DIST = ChangeLog mono-embed.h mono-embed.c
+EXTRA_DIST = mono-embed.h mono-embed.c

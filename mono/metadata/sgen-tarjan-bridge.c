@@ -4,37 +4,11 @@
  * Copyright 2011 Novell, Inc (http://www.novell.com)
  * Copyright 2014 Xamarin Inc (http://www.xamarin.com)
  *
- * THIS MATERIAL IS PROVIDED AS IS, WITH ABSOLUTELY NO WARRANTY EXPRESSED
- * OR IMPLIED.  ANY USE IS AT YOUR OWN RISK.
- *
- * Permission is hereby granted to use or copy this program
- * for any purpose,  provided the above notices are retained on all copies.
- * Permission to modify the code and to distribute modified code is granted,
- * provided the above notices are retained, and a notice that the code was
- * modified is included with the above copyright notice.
- *
  *
  * Copyright 2001-2003 Ximian, Inc
  * Copyright 2003-2010 Novell, Inc.
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
- * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #include "config.h"
@@ -50,126 +24,22 @@
 #include "tabledefs.h"
 #include "utils/mono-logger-internals.h"
 
-typedef struct {
-	int size;
-	int capacity;
-	char *data;
-} DynArray;
+#include "sgen-dynarray.h"
 
-/*Specializations*/
-
-typedef struct {
-	DynArray array;
-} DynPtrArray;
-
-/* private */
-
-static void
-dyn_array_uninit (DynArray *da, int elem_size)
-{
-	if (da->capacity <= 0)
-		return;
-
-	sgen_free_internal_dynamic (da->data, elem_size * da->capacity, INTERNAL_MEM_BRIDGE_DATA);
-	da->data = NULL;
-}
-
-static void
-dyn_array_ensure_capacity (DynArray *da, int capacity, int elem_size)
-{
-	int old_capacity = da->capacity;
-	char *new_data;
-
-	if (capacity <= old_capacity)
-		return;
-
-	if (da->capacity == 0)
-		da->capacity = 2;
-	while (capacity > da->capacity)
-		da->capacity *= 2;
-
-	new_data = sgen_alloc_internal_dynamic (elem_size * da->capacity, INTERNAL_MEM_BRIDGE_DATA, TRUE);
-	if (da->data) {
-		memcpy (new_data, da->data, elem_size * da->size);
-		sgen_free_internal_dynamic (da->data, elem_size * old_capacity, INTERNAL_MEM_BRIDGE_DATA);
-	}
-	da->data = new_data;
-}
-
-static void*
-dyn_array_add (DynArray *da, int elem_size)
-{
-	void *p;
-
-	dyn_array_ensure_capacity (da, da->size + 1, elem_size);
-
-	p = da->data + da->size * elem_size;
-	++da->size;
-	return p;
-}
-
-/* ptr */
-
-static void
-dyn_array_ptr_uninit (DynPtrArray *da)
-{
-	dyn_array_uninit (&da->array, sizeof (void*));
-}
-
-static int
-dyn_array_ptr_size (DynPtrArray *da)
-{
-	return da->array.size;
-}
-
-static void
-dyn_array_ptr_set_size (DynPtrArray *da, int size)
-{
-	da->array.size = size;
-}
-
-static void*
-dyn_array_ptr_get (DynPtrArray *da, int x)
-{
-	return ((void**)da->array.data)[x];
-}
-
-static void
-dyn_array_ptr_add (DynPtrArray *da, void *ptr)
-{
-	void **p = dyn_array_add (&da->array, sizeof (void*));
-	*p = ptr;
-}
-
-#define dyn_array_ptr_push dyn_array_ptr_add
-
-static void*
-dyn_array_ptr_pop (DynPtrArray *da)
-{
-	void *p;
-	int size = da->array.size;
-	g_assert (size > 0);
-	p = dyn_array_ptr_get (da, size - 1);
-	--da->array.size;
-	return p;
-}
-
-static void
-dyn_array_ptr_ensure_capacity (DynPtrArray *da, int capacity)
-{
-	dyn_array_ensure_capacity (&da->array, capacity, sizeof (void*));
-}
-
-
-static void
-dyn_array_ptr_set_all (DynPtrArray *dst, DynPtrArray *src)
-{
-	if (src->array.size > 0) {
-		dyn_array_ptr_ensure_capacity (dst, src->array.size);
-		memcpy (dst->array.data, src->array.data, src->array.size * sizeof (void*));
-	}
-	dst->array.size = src->array.size;
-}
+/*
+ * See comments in sgen-bridge.h
+ *
+ * This bridge implementation is based on the tarjan algorithm for strongly
+ * connected components. It has two elements:
+ *
+ *   - Standard tarjan SCC algorithm to convert graph to SCC forest
+ *
+ *   - "Colors": We reduce the SCC forest to bridged-SCCs-only by using a
+ *     "color" algorithm devised by Kumpera. Consider the set of bridged SCCs
+ *     which is reachable from a given object. We call each such unique set a
+ *     "color". We compute the set of colors and which colors contain links to
+ *     which colors. The color graph then becomes the reduced SCC graph.
+ */
 
 static void
 enable_accounting (void)
@@ -178,6 +48,8 @@ enable_accounting (void)
 	// hash_table = (SgenHashTable)SGEN_HASH_TABLE_INIT (INTERNAL_MEM_BRIDGE_HASH_TABLE, INTERNAL_MEM_BRIDGE_HASH_TABLE_ENTRY, sizeof (HashEntryWithAccounting), mono_aligned_addr_hash, NULL);
 }
 
+// Is this class bridged or not, and should its dependencies be scanned or not?
+// The result of this callback will be cached for use by is_opaque_object later.
 static MonoGCBridgeObjectKind
 class_kind (MonoClass *klass)
 {
@@ -208,9 +80,10 @@ class_kind (MonoClass *klass)
 	return GC_BRIDGE_TRANSPARENT_CLASS;
 }
 
-//enable unsage logging
+//enable usage logging
 // #define DUMP_GRAPH 1
 
+// ScanData state
 enum {
 	INITIAL,
 	SCANNED,
@@ -223,30 +96,45 @@ Optimizations:
 	We can split this data structure in two, those with bridges and those without
 */
 typedef struct {
+    // Colors (ColorDatas) linked to by objects with this color
 	DynPtrArray other_colors;
+    // Bridge objects (GCObjects) held by objects with this color
 	DynPtrArray bridges;
 	int api_index    : 31;
 	unsigned visited : 1;
 } ColorData;
 
-
-typedef struct {
-	GCObject *obj; //XXX this can be eliminated.
+// Represents one managed object. Equivalent of new/old bridge "HashEntry"
+typedef struct _ScanData {
+	// FIXME this can be eliminated; if we have a ScanData we generally looked it up from its GCObject
+	GCObject *obj;
+	// We use the sgen lock_word in GCObject to store a pointer to the ScanData. Cache the original here to restore later:
 	mword lock_word;
 
 	ColorData *color;
+	// Tarjan algorithm index (order visited)
 	int index;
+	// Tarjan index of lowest-index object known reachable from here
 	int low_index : 27;
 
+	// See "ScanData state" enum above
 	unsigned state : 2;
 	unsigned is_bridge : 1;
+	// Similar to lock_word, we use these bits in the GCObject as scratch space then restore them when done
 	unsigned obj_state : 2;
 } ScanData;
 
 
 
+// Stacks of ScanData objects used for tarjan algorithm.
+// The Tarjan algorithm is normally defined recursively; here scan_stack simulates the call stack of a recursive algorithm,
+// and loop_stack is the stack structure used by the algorithm itself.
+static DynPtrArray scan_stack, loop_stack;
 
-static DynPtrArray scan_stack, loop_stack, registered_bridges;
+// GCObjects on which register_finalized_object has been called
+static DynPtrArray registered_bridges;
+
+// ColorData objects
 static DynPtrArray color_merge_array;
 
 static int ignored_objects;
@@ -276,7 +164,7 @@ static int object_data_count;
 static ObjectBucket*
 new_object_bucket (void)
 {
-	ObjectBucket *res = sgen_alloc_internal (INTERNAL_MEM_TARJAN_OBJ_BUCKET);
+	ObjectBucket *res = (ObjectBucket *)sgen_alloc_internal (INTERNAL_MEM_TARJAN_OBJ_BUCKET);
 	res->next_data = &res->data [0];
 	return res;
 }
@@ -325,6 +213,7 @@ free_object_buckets (void)
 //ColorData buckets
 #define NUM_COLOR_ENTRIES ((BUCKET_SIZE - SIZEOF_VOID_P * 2) / sizeof (ColorData))
 
+// Same as ObjectBucket except NUM_COLOR_ENTRIES and NUM_SCAN_ENTRIES differ
 typedef struct _ColorBucket ColorBucket;
 struct _ColorBucket {
 	ColorBucket *next;
@@ -340,7 +229,7 @@ static int color_data_count;
 static ColorBucket*
 new_color_bucket (void)
 {
-	ColorBucket *res = sgen_alloc_internal (INTERNAL_MEM_TARJAN_OBJ_BUCKET);
+	ColorBucket *res = (ColorBucket *)sgen_alloc_internal (INTERNAL_MEM_TARJAN_OBJ_BUCKET);
 	res->next_data = &res->data [0];
 	return res;
 }
@@ -398,6 +287,8 @@ create_data (GCObject *obj)
 	res->obj = obj;
 	res->color = NULL;
 	res->index = res->low_index = -1;
+	res->state = INITIAL;
+	res->is_bridge = FALSE;
 	res->obj_state = o [0] & SGEN_VTABLE_BITS_MASK;
 	res->lock_word = o [1];
 
@@ -600,6 +491,7 @@ is_opaque_object (GCObject *obj)
 	return FALSE;
 }
 
+// Called during DFS; visits one child. If it is a candidate to be scanned, pushes it to the stacks.
 static void
 push_object (GCObject *obj)
 {
@@ -653,6 +545,7 @@ push_object (GCObject *obj)
 		if (dst) push_object (dst); 			\
 	} while (0)
 
+// dfs () function's queue-children-of-object operation.
 static void
 push_all (ScanData *data)
 {
@@ -661,7 +554,7 @@ push_all (ScanData *data)
 	mword desc = sgen_obj_get_descriptor_safe (obj);
 
 #if DUMP_GRAPH
-	printf ("**scanning %p %s\n", obj, safe_name_bridge (obj));
+	printf ("+scanning %s (%p) index %d color %p\n", safe_name_bridge (data->obj), data->obj, data->index, data->color);
 #endif
 
 	#include "sgen/sgen-scan-object.h"
@@ -673,8 +566,8 @@ compute_low_index (ScanData *data, GCObject *obj)
 {
 	ScanData *other;
 	ColorData *cd;
-	obj = bridge_object_forward (obj);
 
+	obj = bridge_object_forward (obj);
 	other = find_data (obj);
 
 #if DUMP_GRAPH
@@ -724,7 +617,7 @@ reduce_color (void)
 	if (size == 0)
 		color = NULL;
 	else if (size == 1) {
-		color = dyn_array_ptr_get (&color_merge_array, 0);
+		color = (ColorData *)dyn_array_ptr_get (&color_merge_array, 0);
 	} else
 		color = new_color (FALSE);
 
@@ -740,7 +633,7 @@ create_scc (ScanData *data)
 	ColorData *color_data = NULL;
 
 	for (i = dyn_array_ptr_size (&loop_stack) - 1; i >= 0; --i) {
-		ScanData *other = dyn_array_ptr_get (&loop_stack, i);
+		ScanData *other = (ScanData *)dyn_array_ptr_get (&loop_stack, i);
 		found_bridge |= other->is_bridge;
 		if (found_bridge || other == data)
 			break;
@@ -749,12 +642,12 @@ create_scc (ScanData *data)
 #if DUMP_GRAPH
 	printf ("|SCC rooted in %s (%p) has bridge %d\n", safe_name_bridge (data->obj), data->obj, found_bridge);
 	printf ("\tpoints-to-colors: ");
-	for (i = 0; i < dyn_array_ptr_size (&color_merge_array); ++i)
+	for (int i = 0; i < dyn_array_ptr_size (&color_merge_array); ++i)
 		printf ("%p ", dyn_array_ptr_get (&color_merge_array, i));
 	printf ("\n");
 
 	printf ("loop stack: ");
-	for (i = 0; i < dyn_array_ptr_size (&loop_stack); ++i) {
+	for (int i = 0; i < dyn_array_ptr_size (&loop_stack); ++i) {
 		ScanData *other = dyn_array_ptr_get (&loop_stack, i);
 		printf ("(%d/%d)", other->index, other->low_index);
 	}
@@ -769,7 +662,7 @@ create_scc (ScanData *data)
 	}
 
 	while (dyn_array_ptr_size (&loop_stack) > 0) {
-		ScanData *other = dyn_array_ptr_pop (&loop_stack);
+		ScanData *other = (ScanData *)dyn_array_ptr_pop (&loop_stack);
 
 #if DUMP_GRAPH
 		printf ("\tmember %s (%p) index %d low-index %d color %p state %d\n", safe_name_bridge (other->obj), other->obj, other->index, other->low_index, other->color, other->state);
@@ -797,11 +690,11 @@ create_scc (ScanData *data)
 	g_assert (found);
 
 	for (i = 0; i < dyn_array_ptr_size (&color_merge_array); ++i) {
-		ColorData *cd  = dyn_array_ptr_get (&color_merge_array, i);
+		ColorData *cd  = (ColorData *)dyn_array_ptr_get (&color_merge_array, i);
 		g_assert (cd->visited);
 		cd->visited = FALSE;
 	}
-	dyn_array_ptr_set_size (&color_merge_array, 0);
+	dyn_array_ptr_empty (&color_merge_array);
 	found_bridge = FALSE;
 }
 
@@ -811,10 +704,10 @@ dfs (void)
 	g_assert (dyn_array_ptr_size (&scan_stack) == 1);
 	g_assert (dyn_array_ptr_size (&loop_stack) == 0);
 
-	dyn_array_ptr_set_size (&color_merge_array, 0);
+	dyn_array_ptr_empty (&color_merge_array);
 
 	while (dyn_array_ptr_size (&scan_stack) > 0) {
-		ScanData *data = dyn_array_ptr_pop (&scan_stack);
+		ScanData *data = (ScanData *)dyn_array_ptr_pop (&scan_stack);
 
 		/**
 		 * Ignore finished objects on stack, they happen due to loops. For example:
@@ -878,15 +771,15 @@ register_finalized_object (GCObject *obj)
 static void
 reset_data (void)
 {
-	dyn_array_ptr_set_size (&registered_bridges, 0);
+	dyn_array_ptr_empty (&registered_bridges);
 }
 
 static void
 cleanup (void)
 {
-	dyn_array_ptr_set_size (&scan_stack, 0);
-	dyn_array_ptr_set_size (&loop_stack, 0);
-	dyn_array_ptr_set_size (&registered_bridges, 0);
+	dyn_array_ptr_empty (&scan_stack);
+	dyn_array_ptr_empty (&loop_stack);
+	dyn_array_ptr_empty (&registered_bridges);
 	free_object_buckets ();
 	free_color_buckets ();
 	reset_cache ();
@@ -950,11 +843,6 @@ processing_stw_step (void)
 #if defined (DUMP_GRAPH)
 	printf ("-----------------\n");
 #endif
-	/*
-	 * bridge_processing_in_progress must be set with the world
-	 * stopped.  If not there would be race conditions.
-	 */
-	bridge_processing_in_progress = TRUE;
 
 	SGEN_TV_GETTIME (curtime);
 
@@ -963,12 +851,12 @@ processing_stw_step (void)
 
 	bridge_count = dyn_array_ptr_size (&registered_bridges);
 	for (i = 0; i < bridge_count ; ++i)
-		register_bridge_object (dyn_array_ptr_get (&registered_bridges, i));
+		register_bridge_object ((GCObject *)dyn_array_ptr_get (&registered_bridges, i));
 
 	setup_time = step_timer (&curtime);
 
 	for (i = 0; i < bridge_count; ++i) {
-		ScanData *sd = find_data (dyn_array_ptr_get (&registered_bridges, i));
+		ScanData *sd = find_data ((GCObject *)dyn_array_ptr_get (&registered_bridges, i));
 		if (sd->state == INITIAL) {
 			dyn_array_ptr_push (&scan_stack, sd);
 			dfs ();
@@ -982,7 +870,7 @@ processing_stw_step (void)
 #if defined (DUMP_GRAPH)
 	printf ("----summary----\n");
 	printf ("bridges:\n");
-	for (i = 0; i < bridge_count; ++i) {
+	for (int i = 0; i < bridge_count; ++i) {
 		ScanData *sd = find_data (dyn_array_ptr_get (&registered_bridges, i));
 		printf ("\t%s (%p) index %d color %p\n", safe_name_bridge (sd->obj), sd->obj, sd->index, sd->color);
 	}
@@ -999,7 +887,7 @@ gather_xrefs (ColorData *color)
 {
 	int i;
 	for (i = 0; i < dyn_array_ptr_size (&color->other_colors); ++i) {
-		ColorData *src = dyn_array_ptr_get (&color->other_colors, i);
+		ColorData *src = (ColorData *)dyn_array_ptr_get (&color->other_colors, i);
 		if (src->visited)
 			continue;
 		src->visited = TRUE;
@@ -1015,7 +903,7 @@ reset_xrefs (ColorData *color)
 {
 	int i;
 	for (i = 0; i < dyn_array_ptr_size (&color->other_colors); ++i) {
-		ColorData *src = dyn_array_ptr_get (&color->other_colors, i);
+		ColorData *src = (ColorData *)dyn_array_ptr_get (&color->other_colors, i);
 		if (!src->visited)
 			continue;
 		src->visited = FALSE;
@@ -1049,7 +937,7 @@ processing_build_callback_data (int generation)
 #endif
 
 	/* This is a straightforward translation from colors to the bridge callback format. */
-	api_sccs = sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeSCC*) * num_colors_with_bridges, INTERNAL_MEM_BRIDGE_DATA, TRUE);
+	api_sccs = (MonoGCBridgeSCC **)sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeSCC*) * num_colors_with_bridges, INTERNAL_MEM_BRIDGE_DATA, TRUE);
 	api_index = xref_count = 0;
 
 	for (cur = root_color_bucket; cur; cur = cur->next) {
@@ -1059,14 +947,14 @@ processing_build_callback_data (int generation)
 			if (!bridges)
 				continue;
 
-			api_sccs [api_index] = sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeSCC) + sizeof (MonoObject*) * bridges, INTERNAL_MEM_BRIDGE_DATA, TRUE);
+			api_sccs [api_index] = (MonoGCBridgeSCC *)sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeSCC) + sizeof (MonoObject*) * bridges, INTERNAL_MEM_BRIDGE_DATA, TRUE);
 			api_sccs [api_index]->is_alive = FALSE;
 			api_sccs [api_index]->num_objs = bridges;
 
 			cd->api_index = api_index;
 
 			for (j = 0; j < bridges; ++j)
-				api_sccs [api_index]->objs [j] = dyn_array_ptr_get (&cd->bridges, j);
+				api_sccs [api_index]->objs [j] = (MonoObject *)dyn_array_ptr_get (&cd->bridges, j);
 			api_index++;
 		}
 	}
@@ -1080,7 +968,7 @@ processing_build_callback_data (int generation)
 			if (!bridges)
 				continue;
 
-			dyn_array_ptr_set_size (&color_merge_array, 0);
+			dyn_array_ptr_empty (&color_merge_array);
 			gather_xrefs (cd);
 			reset_xrefs (cd);
 			dyn_array_ptr_set_all (&cd->other_colors, &color_merge_array);
@@ -1095,7 +983,7 @@ processing_build_callback_data (int generation)
 	dump_color_table (" after xref pass", TRUE);
 #endif
 
-	api_xrefs = sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeXRef) * xref_count, INTERNAL_MEM_BRIDGE_DATA, TRUE);
+	api_xrefs = (MonoGCBridgeXRef *)sgen_alloc_internal_dynamic (sizeof (MonoGCBridgeXRef) * xref_count, INTERNAL_MEM_BRIDGE_DATA, TRUE);
 	api_index = 0;
 	for (cur = root_color_bucket; cur; cur = cur->next) {
 		ColorData *src;
@@ -1105,7 +993,7 @@ processing_build_callback_data (int generation)
 				continue;
 
 			for (j = 0; j < dyn_array_ptr_size (&src->other_colors); ++j) {
-				ColorData *dest = dyn_array_ptr_get (&src->other_colors, j);
+				ColorData *dest = (ColorData *)dyn_array_ptr_get (&src->other_colors, j);
 				g_assert (dyn_array_ptr_size (&dest->bridges)); /* We flattened the color graph, so this must never happen. */
 
 				api_xrefs [api_index].src_scc_index = src->api_index;
@@ -1120,7 +1008,7 @@ processing_build_callback_data (int generation)
 
 #if defined (DUMP_GRAPH)
 	printf ("---xrefs:\n");
-	for (i = 0; i < xref_count; ++i)
+	for (int i = 0; i < xref_count; ++i)
 		printf ("\t%d -> %d\n", api_xrefs [i].src_scc_index, api_xrefs [i].dst_scc_index);
 #endif
 
@@ -1160,7 +1048,6 @@ processing_after_callback (int generation)
 
 	cache_hits = cache_misses = 0;
 	ignored_objects = 0;
-	bridge_processing_in_progress = FALSE;
 }
 
 static void

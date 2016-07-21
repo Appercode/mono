@@ -5,6 +5,7 @@
  *
  * (C) 2002 Ximian, Inc.
  * Copyright 2012 Xamarin Inc (http://www.xamarin.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #ifndef __MONO_METADATA_GC_INTERNAL_H__
@@ -17,8 +18,8 @@
 #include <mono/sgen/gc-internal-agnostic.h>
 #include <mono/utils/gc_wrapper.h>
 
-#define mono_domain_finalizers_lock(domain) mono_mutex_lock (&(domain)->finalizable_objects_hash_lock);
-#define mono_domain_finalizers_unlock(domain) mono_mutex_unlock (&(domain)->finalizable_objects_hash_lock);
+#define mono_domain_finalizers_lock(domain) mono_os_mutex_lock (&(domain)->finalizable_objects_hash_lock);
+#define mono_domain_finalizers_unlock(domain) mono_os_mutex_unlock (&(domain)->finalizable_objects_hash_lock);
 
 /* Register a memory area as a conservatively scanned GC root */
 #define MONO_GC_REGISTER_ROOT_PINNING(x,src,msg) mono_gc_register_root ((char*)&(x), sizeof(x), MONO_GC_DESCRIPTOR_NULL, (src), (msg))
@@ -80,7 +81,6 @@ gpointer    ves_icall_System_GCHandle_GetAddrOfPinnedObject (guint32 handle);
 void        ves_icall_System_GC_register_ephemeron_array (MonoObject *array);
 MonoObject  *ves_icall_System_GC_get_ephemeron_tombstone (void);
 
-MonoBoolean ves_icall_Mono_Runtime_SetGCAllowSynchronousMajor (MonoBoolean flag);
 
 extern void mono_gc_init (void);
 extern void mono_gc_base_init (void);
@@ -110,9 +110,6 @@ void mono_gchandle_set_target (guint32 gchandle, MonoObject *obj);
 
 /*Ephemeron functionality. Sgen only*/
 gboolean    mono_gc_ephemeron_array_add (MonoObject *obj);
-
-/* To disable synchronous, evacuating collections - concurrent SGen only */
-gboolean    mono_gc_set_allow_synchronous_major (gboolean flag);
 
 MonoBoolean
 mono_gc_GCHandle_CheckCurrentDomain (guint32 gchandle);
@@ -157,16 +154,17 @@ void* mono_gc_alloc_obj (MonoVTable *vtable, size_t size);
 void* mono_gc_alloc_vector (MonoVTable *vtable, size_t size, uintptr_t max_length);
 void* mono_gc_alloc_array (MonoVTable *vtable, size_t size, uintptr_t max_length, uintptr_t bounds_size);
 void* mono_gc_alloc_string (MonoVTable *vtable, size_t size, gint32 len);
+void* mono_gc_alloc_mature (MonoVTable *vtable, size_t size);
 MonoGCDescriptor mono_gc_make_descr_for_string (gsize *bitmap, int numbits);
 
 void  mono_gc_register_for_finalization (MonoObject *obj, void *user_data);
 void  mono_gc_add_memory_pressure (gint64 value);
 MONO_API int   mono_gc_register_root (char *start, size_t size, MonoGCDescriptor descr, MonoGCRootSource source, const char *msg);
 void  mono_gc_deregister_root (char* addr);
-int   mono_gc_finalizers_for_domain (MonoDomain *domain, MonoObject **out_array, int out_size);
+void  mono_gc_finalize_domain (MonoDomain *domain, volatile gboolean *suspend);
 void  mono_gc_run_finalize (void *obj, void *data);
 void  mono_gc_clear_domain (MonoDomain * domain);
-void* mono_gc_alloc_mature (MonoVTable *vtable);
+
 
 /* 
  * Register a root which can only be written using a write barrier.
@@ -191,10 +189,17 @@ void  mono_gc_finalize_threadpool_threads (void);
 
 /* fast allocation support */
 
+typedef enum {
+	// Regular fast path allocator.
+	MANAGED_ALLOCATOR_REGULAR,
+	// Managed allocator that just calls into the runtime. Used when allocation profiling w/ AOT.
+	MANAGED_ALLOCATOR_SLOW_PATH,
+} ManagedAllocatorVariant;
+
 int mono_gc_get_aligned_size_for_allocator (int size);
 MonoMethod* mono_gc_get_managed_allocator (MonoClass *klass, gboolean for_box, gboolean known_instance_size);
 MonoMethod* mono_gc_get_managed_array_allocator (MonoClass *klass);
-MonoMethod *mono_gc_get_managed_allocator_by_type (int atype, gboolean slowpath);
+MonoMethod *mono_gc_get_managed_allocator_by_type (int atype, ManagedAllocatorVariant variant);
 
 guint32 mono_gc_get_managed_allocator_types (void);
 
@@ -209,7 +214,8 @@ MonoMethod* mono_gc_get_write_barrier (void);
 void mono_gc_wbarrier_value_copy_bitmap (gpointer dest, gpointer src, int size, unsigned bitmap);
 
 /* helper for the managed alloc support */
-MonoString *mono_string_alloc (int length);
+MonoString *
+ves_icall_string_alloc (int length);
 
 /* 
  * Functions supplied by the runtime and called by the GC. Currently only used
